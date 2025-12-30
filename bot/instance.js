@@ -36,6 +36,7 @@ const { rmSync, existsSync } = require('fs');
 const { join } = require('path');
 const store = require('./lib/lightweight_store');
 const http = require('http');
+const url = require('url');
 
 // Get instance configuration from command line arguments
 const args = process.argv.slice(2);
@@ -97,12 +98,66 @@ setInterval(() => {
 global.botname = "TREKKER MAX WABOT";
 global.themeemoji = "🚀";
 
+// Pairing state
 let pairingCode = null;
+let pairingCodeGeneratedAt = null;
+let pairingCodeExpiresAt = null;
+const PAIRING_CODE_VALIDITY = 180000; // 3 minutes in milliseconds
 let connectionStatus = 'disconnected';
 let botSocket = null;
+let isGeneratingCode = false;
+
+// Function to generate new pairing code
+async function generatePairingCode() {
+    if (!botSocket || isGeneratingCode) {
+        console.log(chalk.yellow('Cannot generate pairing code: socket not ready or already generating'));
+        return null;
+    }
+    
+    if (botSocket.authState?.creds?.registered) {
+        console.log(chalk.yellow('Already registered, no pairing code needed'));
+        return null;
+    }
+    
+    isGeneratingCode = true;
+    const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
+    
+    try {
+        console.log(chalk.blue(`🔄 Generating new pairing code for ${cleanPhone}...`));
+        let code = await botSocket.requestPairingCode(cleanPhone);
+        pairingCode = code?.match(/.{1,4}/g)?.join("-") || code;
+        pairingCodeGeneratedAt = Date.now();
+        pairingCodeExpiresAt = Date.now() + PAIRING_CODE_VALIDITY;
+        connectionStatus = 'pairing';
+        
+        console.log(chalk.green(`\n🔑 NEW Pairing Code: ${pairingCode}`));
+        console.log(chalk.yellow(`⏱️  Valid for 3 minutes (expires at ${new Date(pairingCodeExpiresAt).toLocaleTimeString()})\n`));
+        
+        return pairingCode;
+    } catch (error) {
+        console.error('Error requesting pairing code:', error.message);
+        connectionStatus = 'error';
+        return null;
+    } finally {
+        isGeneratingCode = false;
+    }
+}
+
+// Check if pairing code is still valid
+function isPairingCodeValid() {
+    if (!pairingCode || !pairingCodeExpiresAt) return false;
+    return Date.now() < pairingCodeExpiresAt;
+}
+
+// Get remaining time for pairing code
+function getPairingCodeRemainingTime() {
+    if (!pairingCodeExpiresAt) return 0;
+    const remaining = pairingCodeExpiresAt - Date.now();
+    return Math.max(0, Math.floor(remaining / 1000));
+}
 
 // HTTP Server for API communication
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -114,22 +169,44 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    if (req.url === '/status') {
+    const parsedUrl = url.parse(req.url, true);
+    const pathname = parsedUrl.pathname;
+
+    if (pathname === '/status') {
         res.writeHead(200);
         res.end(JSON.stringify({
             instanceId,
             status: connectionStatus,
-            pairingCode,
+            pairingCode: isPairingCodeValid() ? pairingCode : null,
+            pairingCodeValid: isPairingCodeValid(),
+            pairingCodeRemainingSeconds: getPairingCodeRemainingTime(),
+            pairingCodeExpiresAt,
             phoneNumber,
             user: botSocket?.user || null
         }));
-    } else if (req.url === '/pairing-code') {
+    } else if (pathname === '/pairing-code') {
         res.writeHead(200);
         res.end(JSON.stringify({
-            pairingCode,
+            pairingCode: isPairingCodeValid() ? pairingCode : null,
+            pairingCodeValid: isPairingCodeValid(),
+            pairingCodeRemainingSeconds: getPairingCodeRemainingTime(),
+            pairingCodeExpiresAt,
             status: connectionStatus
         }));
-    } else if (req.url === '/stop') {
+    } else if (pathname === '/regenerate-code' && req.method === 'POST') {
+        // Generate a new pairing code on demand
+        console.log(chalk.blue('📱 Regenerate pairing code requested'));
+        const newCode = await generatePairingCode();
+        res.writeHead(200);
+        res.end(JSON.stringify({
+            success: !!newCode,
+            pairingCode: newCode,
+            pairingCodeValid: isPairingCodeValid(),
+            pairingCodeRemainingSeconds: getPairingCodeRemainingTime(),
+            pairingCodeExpiresAt,
+            status: connectionStatus
+        }));
+    } else if (pathname === '/stop') {
         res.writeHead(200);
         res.end(JSON.stringify({ message: 'Stopping instance' }));
         setTimeout(() => process.exit(0), 1000);
@@ -176,20 +253,13 @@ async function startBot() {
         sock.ev.on('creds.update', saveCreds);
         store.bind(sock.ev);
 
-        // Handle pairing code request
+        // Handle initial pairing code request
         if (phoneNumber && !sock.authState.creds.registered) {
-            connectionStatus = 'pairing';
-            const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
+            connectionStatus = 'waiting_for_pairing';
             
+            // Generate pairing code after socket is ready
             setTimeout(async () => {
-                try {
-                    let code = await sock.requestPairingCode(cleanPhone);
-                    pairingCode = code?.match(/.{1,4}/g)?.join("-") || code;
-                    console.log(chalk.green(`\n🔑 Pairing Code: ${pairingCode}\n`));
-                } catch (error) {
-                    console.error('Error requesting pairing code:', error);
-                    connectionStatus = 'error';
-                }
+                await generatePairingCode();
             }, 3000);
         }
 
@@ -268,14 +338,15 @@ async function startBot() {
             
             if (connection == "open") {
                 connectionStatus = 'connected';
-                pairingCode = null;
+                pairingCode = null; // Clear pairing code once connected
+                pairingCodeExpiresAt = null;
                 console.log(chalk.green(`\n✅ TREKKER MAX WABOT Connected!`));
                 console.log(chalk.cyan(`👤 User: ${JSON.stringify(sock.user, null, 2)}`));
 
                 try {
                     const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net';
                     await sock.sendMessage(botNumber, {
-                        text: `🚀 *TREKKER MAX WABOT Connected!*\n\n⏰ Time: ${new Date().toLocaleString()}\n✅ Instance: ${instanceId}\n✅ Status: Online and Ready!`,
+                        text: `🚀 *TREKKER MAX WABOT Connected!*\n\n⏰ Time: ${new Date().toLocaleString()}\n✅ Instance: ${instanceId}\n✅ Status: Online and Ready!\n\nUse .help or .menu to see commands.`,
                     });
                 } catch (error) {
                     console.error('Error sending connection message:', error.message);
@@ -298,6 +369,8 @@ async function startBot() {
                         console.error('Error deleting session:', error);
                     }
                     connectionStatus = 'logged_out';
+                    pairingCode = null;
+                    pairingCodeExpiresAt = null;
                 }
                 
                 if (shouldReconnect) {
