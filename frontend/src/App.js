@@ -24,6 +24,7 @@ const StatusBadge = ({ status }) => {
     connected: { color: 'bg-emerald-500', text: 'Connected', pulse: true },
     running: { color: 'bg-emerald-500', text: 'Running', pulse: true },
     pairing: { color: 'bg-yellow-500', text: 'Pairing', pulse: true },
+    waiting_for_pairing: { color: 'bg-yellow-500', text: 'Waiting for Pairing', pulse: true },
     connecting: { color: 'bg-blue-500', text: 'Connecting', pulse: true },
     starting: { color: 'bg-blue-500', text: 'Starting', pulse: true },
     stopped: { color: 'bg-gray-500', text: 'Stopped', pulse: false },
@@ -39,6 +40,47 @@ const StatusBadge = ({ status }) => {
       {config.pulse && <span className="w-2 h-2 bg-white rounded-full animate-pulse"></span>}
       {config.text}
     </span>
+  );
+};
+
+// Countdown Timer Component
+const CountdownTimer = ({ expiresAt, onExpire }) => {
+  const [remainingSeconds, setRemainingSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!expiresAt) return;
+
+    const updateTimer = () => {
+      const now = Date.now();
+      const remaining = Math.max(0, Math.floor((expiresAt - now) / 1000));
+      setRemainingSeconds(remaining);
+      
+      if (remaining === 0 && onExpire) {
+        onExpire();
+      }
+    };
+
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    return () => clearInterval(interval);
+  }, [expiresAt, onExpire]);
+
+  const minutes = Math.floor(remainingSeconds / 60);
+  const seconds = remainingSeconds % 60;
+
+  const getTimerColor = () => {
+    if (remainingSeconds > 120) return 'text-emerald-400';
+    if (remainingSeconds > 60) return 'text-yellow-400';
+    return 'text-red-400';
+  };
+
+  return (
+    <div className={`text-center ${getTimerColor()}`}>
+      <div className="text-3xl font-mono font-bold">
+        {String(minutes).padStart(2, '0')}:{String(seconds).padStart(2, '0')}
+      </div>
+      <p className="text-xs text-gray-400 mt-1">Time remaining</p>
+    </div>
   );
 };
 
@@ -154,10 +196,12 @@ const CreateInstanceModal = ({ isOpen, onClose, onSubmit }) => {
   );
 };
 
-// Pairing Code Modal
+// Pairing Code Modal with Timer
 const PairingModal = ({ instance, onClose, onRefresh }) => {
   const [loading, setLoading] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
   const [pairingData, setPairingData] = useState(null);
+  const [expired, setExpired] = useState(false);
 
   const fetchPairingCode = useCallback(async () => {
     if (!instance) return;
@@ -166,6 +210,7 @@ const PairingModal = ({ instance, onClose, onRefresh }) => {
       const response = await fetch(`${BACKEND_URL}/api/instances/${instance.id}/pairing-code`);
       const data = await response.json();
       setPairingData(data);
+      setExpired(!data.pairing_code_valid && data.pairing_code_remaining_seconds === 0);
     } catch (err) {
       console.error('Error fetching pairing code:', err);
     } finally {
@@ -173,16 +218,35 @@ const PairingModal = ({ instance, onClose, onRefresh }) => {
     }
   }, [instance]);
 
+  const regenerateCode = async () => {
+    if (!instance) return;
+    setRegenerating(true);
+    setExpired(false);
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/instances/${instance.id}/regenerate-code`, {
+        method: 'POST'
+      });
+      const data = await response.json();
+      setPairingData(data);
+    } catch (err) {
+      console.error('Error regenerating pairing code:', err);
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
   useEffect(() => {
     fetchPairingCode();
-    const interval = setInterval(fetchPairingCode, 5000);
+    const interval = setInterval(fetchPairingCode, 3000);
     return () => clearInterval(interval);
   }, [fetchPairingCode]);
 
   if (!instance) return null;
 
-  const pairingCode = pairingData?.pairing_code || instance.pairing_code;
+  const pairingCode = pairingData?.pairing_code;
   const status = pairingData?.status || instance.status;
+  const expiresAt = pairingData?.pairing_code_expires_at;
+  const isValid = pairingData?.pairing_code_valid;
 
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -210,13 +274,19 @@ const PairingModal = ({ instance, onClose, onRefresh }) => {
               <p className="text-emerald-400 font-medium text-lg">Successfully Connected!</p>
               <p className="text-gray-400 text-sm mt-2">Your bot is now active</p>
             </div>
-          ) : pairingCode ? (
+          ) : pairingCode && isValid ? (
             <>
               <div className="p-6 bg-gradient-to-br from-emerald-500/20 to-teal-500/20 border border-emerald-500/30 rounded-xl">
                 <p className="text-sm text-gray-400 mb-3">Your Pairing Code</p>
-                <p className="text-4xl font-mono font-bold text-white tracking-wider">
+                <p className="text-4xl font-mono font-bold text-white tracking-wider mb-4">
                   {pairingCode}
                 </p>
+                {expiresAt && (
+                  <CountdownTimer 
+                    expiresAt={expiresAt} 
+                    onExpire={() => setExpired(true)}
+                  />
+                )}
               </div>
 
               <div className="text-left space-y-3 p-4 bg-gray-700/30 rounded-xl">
@@ -245,28 +315,73 @@ const PairingModal = ({ instance, onClose, onRefresh }) => {
                 </ol>
               </div>
             </>
+          ) : expired || (!pairingCode && !loading) ? (
+            <div className="p-6 bg-orange-500/20 border border-orange-500/50 rounded-xl">
+              <span className="text-5xl mb-4 block">⏰</span>
+              <p className="text-orange-400 font-medium text-lg">Pairing Code Expired</p>
+              <p className="text-gray-400 text-sm mt-2 mb-4">Click below to generate a new code</p>
+              <button
+                onClick={regenerateCode}
+                disabled={regenerating}
+                className="px-6 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl hover:from-emerald-600 hover:to-teal-600 transition font-medium disabled:opacity-50 flex items-center justify-center gap-2 mx-auto"
+              >
+                {regenerating ? (
+                  <>
+                    <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                    Generating...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    Generate New Code
+                  </>
+                )}
+              </button>
+            </div>
           ) : (
             <div className="p-6">
-              {loading ? (
-                <div className="flex flex-col items-center gap-3">
-                  <svg className="animate-spin h-10 w-10 text-emerald-500" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                  </svg>
-                  <p className="text-gray-400">Generating pairing code...</p>
-                </div>
-              ) : (
-                <p className="text-gray-400">Waiting for pairing code...</p>
-              )}
+              <div className="flex flex-col items-center gap-3">
+                <svg className="animate-spin h-10 w-10 text-emerald-500" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                <p className="text-gray-400">Generating pairing code...</p>
+              </div>
             </div>
           )}
 
-          <button
-            onClick={() => { onRefresh(); onClose(); }}
-            className="w-full px-4 py-3 bg-gray-700 text-gray-300 rounded-xl hover:bg-gray-600 transition font-medium"
-          >
-            Close
-          </button>
+          <div className="flex gap-3">
+            {pairingCode && isValid && (
+              <button
+                onClick={regenerateCode}
+                disabled={regenerating}
+                className="flex-1 px-4 py-3 bg-blue-500 hover:bg-blue-600 text-white rounded-xl transition font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {regenerating ? (
+                  <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                ) : (
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                )}
+                New Code
+              </button>
+            )}
+            <button
+              onClick={() => { onRefresh(); onClose(); }}
+              className="flex-1 px-4 py-3 bg-gray-700 text-gray-300 rounded-xl hover:bg-gray-600 transition font-medium"
+            >
+              Close
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -286,7 +401,7 @@ const InstanceCard = ({ instance, onStart, onStop, onDelete, onPair }) => {
     }
   };
 
-  const isRunning = ['running', 'connected', 'pairing', 'connecting'].includes(instance.status);
+  const isRunning = ['running', 'connected', 'pairing', 'connecting', 'waiting_for_pairing'].includes(instance.status);
 
   return (
     <div className="bg-gray-800/50 backdrop-blur border border-gray-700 rounded-2xl p-5 hover:border-emerald-500/50 transition-all duration-300">
@@ -498,7 +613,7 @@ function App() {
               </div>
               <div>
                 <p className="text-2xl font-bold text-white">
-                  {instances.filter(i => i.status === 'pairing').length}
+                  {instances.filter(i => ['pairing', 'waiting_for_pairing'].includes(i.status)).length}
                 </p>
                 <p className="text-sm text-gray-400">Pairing</p>
               </div>
