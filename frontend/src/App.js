@@ -210,7 +210,8 @@ const PairingModal = ({ instance, onClose, onRefresh }) => {
       const response = await fetch(`${BACKEND_URL}/api/instances/${instance.id}/pairing-code`);
       const data = await response.json();
       setPairingData(data);
-      setExpired(!data.pairing_code_valid && data.pairing_code_remaining_seconds === 0);
+      // Only set expired if we have no code AND no pending status
+      setExpired(!data.pairing_code && data.status !== 'waiting_for_pairing' && data.status !== 'connecting');
     } catch (err) {
       console.error('Error fetching pairing code:', err);
     } finally {

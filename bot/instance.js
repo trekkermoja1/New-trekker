@@ -243,6 +243,7 @@ async function startBot() {
                 connectionStatus = 'connected';
                 isAuthenticated = true;
                 pairingCode = null; // Clear pairing code once connected
+                pairingCodeGeneratedAt = null;
                 
                 console.log(chalk.green(`\n✅ TREKKER MAX WABOT Connected Successfully!`));
                 console.log(chalk.cyan(`👤 User: ${JSON.stringify(sock.user, null, 2)}`));
