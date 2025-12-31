@@ -91,6 +91,11 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+# ... (rest of imports)
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -100,9 +105,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Serve static files from the frontend build
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+
 @app.get("/")
-async def root():
-    return {"message": "TREKKER MAX WABOT API is running"}
+async def serve_index():
+    return FileResponse("static/index.html")
+
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str):
+    if full_path.startswith("api"):
+        raise HTTPException(status_code=404)
+    
+    # Check if the file exists in static root or static/static
+    file_path = os.path.join("static", full_path)
+    if os.path.isfile(file_path):
+        return FileResponse(file_path)
+    
+    # Try static/static (for CRA build structure)
+    static_file_path = os.path.join("static/static", full_path)
+    if os.path.isfile(static_file_path):
+        return FileResponse(static_file_path)
+        
+    return FileResponse("static/index.html")
 
 
 def get_next_port():
@@ -366,4 +392,4 @@ async def restart_instance(instance_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=5000)
