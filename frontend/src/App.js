@@ -165,58 +165,86 @@ function App() {
 
   const handleStopBot = async (botId) => {
     if (!window.confirm('Stop this bot?')) return;
+    setLoading(true);
     try {
       const response = await fetch(`${API_URL}/api/instances/${botId}/stop`, {
         method: 'POST'
       });
       if (response.ok) {
+        alert('Bot stopped successfully');
         fetchBots();
+      } else {
+        const error = await response.json();
+        alert('Error: ' + (error.detail || 'Failed to stop bot'));
       }
     } catch (error) {
       alert('Error: ' + error.message);
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleDeleteBot = async (botId) => {
     if (!window.confirm('Delete this bot permanently?')) return;
+    setLoading(true);
     try {
       const response = await fetch(`${API_URL}/api/instances/${botId}`, {
         method: 'DELETE'
       });
       if (response.ok) {
+        alert('Bot deleted successfully');
         fetchBots();
         fetchServerInfo();
+      } else {
+        const error = await response.json();
+        alert('Error: ' + (error.detail || 'Failed to delete bot'));
       }
     } catch (error) {
       alert('Error: ' + error.message);
+    } finally {
+      setLoading(false);
     }
   };
 
   const getPairingCode = async (botId) => {
+    setLoading(true);
     try {
       const response = await fetch(`${API_URL}/api/instances/${botId}/pairing-code`);
       const data = await response.json();
+      console.log('Pairing code response:', data);
       if (data.pairing_code) {
-        alert(`Pairing Code: ${data.pairing_code}`);
+        setPairingCode(data.pairing_code);
+        setShowPairingModal(true);
       } else {
-        alert('No pairing code available. Bot may not be started yet.');
+        alert('No pairing code available yet. Please wait a moment and try again.');
       }
     } catch (error) {
+      console.error('Error fetching pairing code:', error);
       alert('Error: ' + error.message);
+    } finally {
+      setLoading(false);
     }
   };
 
   const regeneratePairingCode = async (botId) => {
+    setLoading(true);
     try {
       const response = await fetch(`${API_URL}/api/instances/${botId}/regenerate-code`, {
         method: 'POST'
       });
       const data = await response.json();
+      console.log('Regenerate response:', data);
       if (data.pairingCode) {
-        alert(`New Pairing Code: ${data.pairingCode}`);
+        setPairingCode(data.pairingCode);
+        setShowPairingModal(true);
+      } else {
+        alert('Failed to regenerate pairing code. Please try again.');
       }
     } catch (error) {
+      console.error('Error regenerating pairing code:', error);
       alert('Error: ' + error.message);
+    } finally {
+      setLoading(false);
     }
   };
 
