@@ -3,6 +3,11 @@ TREKKER MAX WABOT - Backend Server
 Multi-Instance WhatsApp Bot Platform with Approval Workflow & Multi-Tenancy
 """
 import os
+from dotenv import load_dotenv
+
+# Load environment variables first
+load_dotenv()
+
 import subprocess
 import uuid
 import asyncio
