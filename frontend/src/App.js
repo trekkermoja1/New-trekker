@@ -665,6 +665,42 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Pairing Code Modal */}
+      {showPairingModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4">WhatsApp Pairing Code</h2>
+            
+            <div className="bg-emerald-50 border-2 border-emerald-200 rounded-lg p-6 mb-6 text-center">
+              <p className="text-sm text-gray-600 mb-2">Enter this code in WhatsApp:</p>
+              <p className="text-4xl font-bold text-emerald-600 tracking-wider font-mono">
+                {pairingCode}
+              </p>
+            </div>
+            
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+              <p className="text-sm text-gray-700 mb-2 font-medium">How to pair:</p>
+              <ol className="text-sm text-gray-600 space-y-1 list-decimal list-inside">
+                <li>Open WhatsApp on your phone</li>
+                <li>Go to Settings → Linked Devices</li>
+                <li>Tap "Link a Device"</li>
+                <li>Enter the code above</li>
+              </ol>
+            </div>
+            
+            <button
+              onClick={() => {
+                setShowPairingModal(false);
+                setPairingCode('');
+              }}
+              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-lg font-medium transition"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
