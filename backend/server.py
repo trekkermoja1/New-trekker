@@ -207,11 +207,16 @@ async def lifespan(app: FastAPI):
     
     # Stop all previously running instances on this server
     async with db_pool.acquire() as conn:
-        await conn.execute("""
-            UPDATE bot_instances
-            SET pid = NULL, updated_at = NOW()
-            WHERE server_name = $1
-        """, SERVERNAME)
+        # Check if pid column exists before updating
+        try:
+            await conn.execute("""
+                UPDATE bot_instances
+                SET pid = NULL, updated_at = NOW()
+                WHERE server_name = $1
+            """, SERVERNAME)
+        except:
+            # pid column might not exist in old schema, ignore
+            pass
     
     yield
     
