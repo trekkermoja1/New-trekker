@@ -69,7 +69,20 @@ async def init_database():
     global db_pool
     
     try:
-        db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+        # Parse the connection string for asyncpg
+        import urllib.parse
+        result = urllib.parse.urlparse(DATABASE_URL)
+        
+        db_pool = await asyncpg.create_pool(
+            host=result.hostname,
+            port=result.port,
+            user=result.username,
+            password=result.password,
+            database=result.path[1:],  # Remove leading slash
+            ssl='require',
+            min_size=2,
+            max_size=10
+        )
         
         # Create instances table
         async with db_pool.acquire() as conn:
