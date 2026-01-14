@@ -19,6 +19,8 @@ function App() {
   const [newBotData, setNewBotData] = useState({ name: '', phone_number: '' });
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('new');
+  const [showPairingModal, setShowPairingModal] = useState(false);
+  const [pairingCode, setPairingCode] = useState('');
 
   useEffect(() => {
     if (isLoggedIn) {
