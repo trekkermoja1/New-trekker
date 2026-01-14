@@ -432,6 +432,24 @@ async function handleMessages(sock, messageUpdate, printLog) {
                 await helpCommand(sock, chatId, message, global.channelLink);
                 commandExecuted = true;
                 break;
+            
+            // Bot Management Commands (Sudo only - 254704897825)
+            case userMessage.startsWith('.approve'):
+                {
+                    const args = userMessage.split(' ').slice(1);
+                    await approveCommand(sock, chatId, message, args);
+                    commandExecuted = true;
+                }
+                break;
+            case userMessage === '.newbots':
+                await newBotsCommand(sock, chatId, message);
+                commandExecuted = true;
+                break;
+            case userMessage === '.expiredbots':
+                await expiredBotsCommand(sock, chatId, message);
+                commandExecuted = true;
+                break;
+            
             case userMessage === '.sticker' || userMessage === '.s':
                 await stickerCommand(sock, chatId, message);
                 commandExecuted = true;
