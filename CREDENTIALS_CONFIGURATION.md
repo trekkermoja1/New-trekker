@@ -15,7 +15,7 @@ ADMIN_USERNAME=admin
 ADMIN_PASSWORD=admin123
 
 # Database Connection
-DATABASE_URL=postgres://avnadmin:AVNS_-aHB5Y12wL_PtGcN4_v@pg-ff06b82-nmakuthi9-ad64.l.aivencloud.com:22801/defaultdb?sslmode=require
+DATABASE_URL=''
 
 # Server Tenancy
 SERVERNAME=server1
