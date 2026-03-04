@@ -1,0 +1,61 @@
+name: Sync Files to New-trekker Repo
+
+on:
+  workflow_dispatch:  # Triggered manually from GitHub Actions UI only
+
+jobs:
+  sync:
+    name: Clean & Copy Files to New-trekker
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Step 1: Checkout the SOURCE repo (where this workflow lives) ──────
+      - name: Checkout source repo
+        uses: actions/checkout@v4
+        with:
+          path: source
+          fetch-depth: 1
+
+      # ── Step 2: Checkout the DESTINATION repo (trekkermoja1/New-trekker) ──
+      - name: Checkout destination repo (New-trekker)
+        uses: actions/checkout@v4
+        with:
+          repository: trekkermoja1/New-trekker
+          token: ${{ secrets.TREKKER }}   # Personal Access Token stored as TREKKER secret
+          path: destination
+          fetch-depth: 1
+
+      # ── Step 3: Clean destination repo (remove all tracked files) ──────────
+      - name: Clean destination repo contents
+        run: |
+          cd destination
+          # Remove everything except the .git folder
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          echo "✅ Destination repo cleaned."
+
+      # ── Step 4: Copy all files from source → destination ──────────────────
+      - name: Copy files from source to destination
+        run: |
+          # Copy everything except the .git folder from source
+          rsync -av --exclude='.git' source/ destination/
+          echo "✅ Files copied successfully."
+
+      # ── Step 5: Commit and push to destination repo ────────────────────────
+      - name: Commit and push to New-trekker
+        run: |
+          cd destination
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          # Only commit if there are actual changes
+          if git diff --cached --quiet; then
+            echo "⚠️  No changes detected — nothing to commit."
+          else
+            COMMIT_MSG="sync: update from ${{ github.repository }}@${{ github.sha }}"
+            git commit -m "$COMMIT_MSG"
+            git push origin main
+            echo "✅ Changes pushed to trekkermoja1/New-trekker."
+          fi

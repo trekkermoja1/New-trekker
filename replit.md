@@ -1,86 +1,48 @@
-# TREKKER MAX WABOT
+# TREKKER WABOT
 
-## Overview
+WhatsApp Bot with Backend and Frontend.
 
-TREKKER MAX WABOT is a multi-instance WhatsApp bot platform that enables running multiple WhatsApp bots simultaneously through a web-based management interface. The platform uses a microservices architecture with isolated bot instances, each running in its own environment with separate event listeners and authentication sessions.
-
-The system allows users to:
-- Create and manage multiple WhatsApp bot instances
-- Pair WhatsApp accounts via web dashboard (no terminal required)
-- Monitor bot status in real-time
-- Execute various commands including group management, media downloads, AI chat, and entertainment features
+## Project Structure
+- `bot/`: WhatsApp bot logic (Node.js, Baileys library)
+- `frontend/`: React frontend (builds to `backend/static/`)
+- `backend/`: Express.js backend (server.js)
+- `public/`: Public pairing page (landing page)
 
 ## User Preferences
+- **Package Manager**: Always use `yarn` for Node.js dependencies.
+- **Start Command**: `yarn install && yarn start` (runs `node backend/server.js`)
+- **Port**: 5000 (Replit standard, set via environment variable)
 
-Preferred communication style: Simple, everyday language.
+## Architecture
+- The backend serves the frontend and provides the API for the bot management system.
+- Frontend builds to `backend/static/`.
+- Uses SQLite fallback if no `DATABASE_URL` is set; otherwise PostgreSQL.
+- Bot instances run as child processes on dynamic ports (4001+).
+- The pairing page is served from `public/index.html` at `/`.
+- The admin dashboard is at `/dashboard` (requires `WEB=true` env var to enable).
 
-## System Architecture
+## Environment Variables
+- `PORT` / `WEB_PORT`: Set to 5000 (Replit standard)
+- `SERVER_NAME`: Name of this server instance (default: server3)
+- `DATABASE_URL`: PostgreSQL connection string (optional, falls back to SQLite)
+- `ADMIN_USERNAME`: Admin login username (default: admin)
+- `ADMIN_PASSWORD`: Admin login password (default: admin123)
+- `WEB`: Set to `true` to enable the dashboard/frontend
 
-### Frontend Layer
-- **Technology**: React 18 with Tailwind CSS
-- **Purpose**: Web dashboard for bot instance management
-- **Port**: 3000
-- **Features**: Instance creation, status monitoring, start/stop/restart controls
+## Security
+- CORS restricted to Replit domains and localhost
+- Admin credentials should be set via environment secrets
+- Request body size limited to 10mb
 
-### Backend API Layer
-- **Technology**: Python FastAPI with Uvicorn
-- **Purpose**: REST API for managing bot instances and coordinating processes
-- **Port**: 8001
-- **Data Storage**: Local JSON file (`instances.json`) for instance tracking
-- **Key Dependencies**: httpx for async HTTP, pydantic for validation
+## Recent Changes
+- (Migration) Fixed PORT from 8080 to 5000 for Replit compatibility
+- (Migration) Restricted CORS from wildcard to Replit/localhost origins
+- (Migration) Added request body size limits (10mb)
+- (2026-01-28) Fixed `.approve` and `.renew` commands to use phone number
+- (2026-01-28) Added DEV_MODE flag in botmanagement.js
+- (2026-01-28) Fixed owner detection in isOwner.js
+- (2026-01-31) Added 30+ new commands (privacy, chat ops, user query)
+- (2026-01-31) Fixed `.block` command with Baileys updateBlockStatus
 
-### Bot Instance Layer
-- **Technology**: Node.js with @whiskeysockets/baileys (WhatsApp Web API)
-- **Purpose**: Individual WhatsApp bot processes
-- **Ports**: Dynamic allocation starting from 4001 (4001, 4002, 400N for each instance)
-- **Session Storage**: File-based auth state per instance (`bot/instances/{id}/session`)
-
-### Bot Command Architecture
-- Commands are modular, stored in `bot/commands/` directory
-- Each command is a separate JavaScript module
-- Main entry point (`bot/main.js`) handles message routing
-- Command categories: Group management, AI/chat, media download, entertainment, utility
-
-### Data Flow
-1. Frontend sends requests to FastAPI backend
-2. Backend spawns/manages Node.js bot processes
-3. Each bot instance maintains its own WhatsApp session
-4. Bot instances communicate status back to backend via HTTP API
-
-### Key Design Decisions
-- **Multi-instance isolation**: Each bot runs as a separate process to prevent cross-contamination and enable independent management
-- **Web-based pairing**: Eliminates need for terminal access, generates pairing codes via API
-- **File-based storage**: Uses JSON files instead of a database for simplicity (instances.json, session files)
-- **Modular commands**: Each command is self-contained for easy addition/modification
-
-## External Dependencies
-
-### WhatsApp Integration
-- **@whiskeysockets/baileys**: WhatsApp Web API client for Node.js
-- **libsignal**: Signal protocol implementation for encryption
-
-### Media Processing
-- **ffmpeg/fluent-ffmpeg**: Video/audio processing and conversion
-- **sharp**: Image processing (blur, resize)
-- **jimp**: JavaScript image manipulation
-- **node-webpmux**: WebP sticker creation
-
-### External APIs Used
-- **Giphy API**: GIF search (`settings.giphyApiKey`)
-- **NewsAPI**: News headlines
-- **Various scraper APIs**: Instagram, Facebook, YouTube downloads
-- **AI APIs**: GPT and Gemini endpoints for chatbot functionality
-- **Tenor API**: Emoji kitchen for emoji mixing
-
-### Node.js Key Packages
-- **axios/node-fetch**: HTTP requests
-- **pino**: Logging
-- **node-cache**: In-memory caching
-- **cheerio/jsdom**: HTML parsing for web scraping
-- **qrcode/qrcode-terminal**: QR code generation for pairing
-
-### Python Backend Dependencies
-- **FastAPI**: Web framework
-- **motor**: Async MongoDB driver (prepared for future use)
-- **httpx**: Async HTTP client
-- **python-dotenv**: Environment configuration
+## Sudo Commands (Development Mode)
+Currently in DEV_MODE - anyone can execute sudo commands. To disable, set `DEV_MODE = false` in `bot/commands/botmanagement.js`.

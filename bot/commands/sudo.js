@@ -12,8 +12,24 @@ function extractMentionedJid(message) {
 }
 
 async function sudoCommand(sock, chatId, message) {
-    const senderJid = message.key.participant || message.key.remoteJid;
-    const isOwner = message.key.fromMe || await isOwnerOrSudo(senderJid, sock, chatId);
+    const senderJid = (message.key.participant || message.key.remoteJid).split('@')[0] + '@s.whatsapp.net';
+    const sudoList = await getSudoList();
+    const ownerJid = settings.ownerNumber + '@s.whatsapp.net';
+    
+    // Detailed logging for sudo commands
+    console.log('=== SUDO COMMAND METADATA ===');
+    console.log(`Message ID: ${message.key.id}`);
+    console.log(`Remote JID: ${chatId}`);
+    console.log(`Sender JID: ${senderJid}`);
+    console.log(`Owner JID: ${ownerJid}`);
+    console.log(`Is from me: ${message.key.fromMe}`);
+    console.log(`Message Type: ${Object.keys(message.message || {})[0]}`);
+    console.log('=============================');
+    
+    // Check if sender is owner or in sudo list
+    const isOwner = senderJid === ownerJid;
+    const isSudoUser = sudoList.includes(senderJid);
+    const isAuthorized = isOwner || isSudoUser || message.key.fromMe;
 
     const rawText = message.message?.conversation || message.message?.extendedTextMessage?.text || '';
     const args = rawText.trim().split(' ').slice(1);
@@ -35,8 +51,8 @@ async function sudoCommand(sock, chatId, message) {
         return;
     }
 
-    if (!isOwner) {
-        await sock.sendMessage(chatId, { text: '❌ Only owner can add/remove sudo users. Use .sudo list to view.' },{quoted :message});
+    if (!isAuthorized) {
+        await sock.sendMessage(chatId, { text: '❌ Only developers can use this command.' },{quoted :message});
         return;
     }
 
@@ -53,7 +69,6 @@ async function sudoCommand(sock, chatId, message) {
     }
 
     if (sub === 'del' || sub === 'remove') {
-        const ownerJid = settings.ownerNumber + '@s.whatsapp.net';
         if (targetJid === ownerJid) {
             await sock.sendMessage(chatId, { text: 'Owner cannot be removed.' },{quoted :message});
             return;

@@ -1,112 +1,83 @@
 const axios = require('axios');
 const yts = require('yt-search');
-const fs = require('fs');
-const path = require('path');
 
-const AXIOS_DEFAULTS = {
-	timeout: 60000,
-	headers: {
-		'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-		'Accept': 'application/json, text/plain, */*'
-	}
+const BASE_URL = 'https://noobs-api.top';
+
+// Helper for newsletter context
+const channelInfo = {
+    contextInfo: {
+        forwardingScore: 1,
+        isForwarded: true,
+        forwardedNewsletterMessageInfo: {
+            newsletterJid: '120363238139244263@newsletter',
+            newsletterName: 'FLASH-MD',
+            serverMessageId: -1
+        }
+    }
 };
 
-async function tryRequest(getter, attempts = 3) {
-	let lastError;
-	for (let attempt = 1; attempt <= attempts; attempt++) {
-		try {
-			return await getter();
-		} catch (err) {
-			lastError = err;
-			if (attempt < attempts) {
-				await new Promise(r => setTimeout(r, 1000 * attempt));
-			}
-		}
-	}
-	throw lastError;
-}
+module.exports = async (sock, chatId, msg, args) => {
+    const query = args.join(' ');
 
-async function getIzumiDownloadByUrl(youtubeUrl) {
-	const apiUrl = `https://izumiiiiiiii.dpdns.org/downloader/youtube?url=${encodeURIComponent(youtubeUrl)}&format=mp3`;
-	const res = await tryRequest(() => axios.get(apiUrl, AXIOS_DEFAULTS));
-	if (res?.data?.result?.download) return res.data.result;
-	throw new Error('Izumi youtube?url returned no download');
-}
+    if (!query) {
+        return sock.sendMessage(chatId, {
+            text: 'Please provide a song name or keyword.'
+        }, { quoted: msg });
+    }
 
-async function getIzumiDownloadByQuery(query) {
-	const apiUrl = `https://izumiiiiiiii.dpdns.org/downloader/youtube-play?query=${encodeURIComponent(query)}`;
-	const res = await tryRequest(() => axios.get(apiUrl, AXIOS_DEFAULTS));
-	if (res?.data?.result?.download) return res.data.result;
-	throw new Error('Izumi youtube-play returned no download');
-}
-
-async function getOkatsuDownloadByUrl(youtubeUrl) {
-	const apiUrl = `https://okatsu-rolezapiiz.vercel.app/downloader/ytmp3?url=${encodeURIComponent(youtubeUrl)}`;
-	const res = await tryRequest(() => axios.get(apiUrl, AXIOS_DEFAULTS));
-	// Okatsu response shape: { status, creator, title, format, thumb, duration, cached, dl }
-	if (res?.data?.dl) {
-		return {
-			download: res.data.dl,
-			title: res.data.title,
-			thumbnail: res.data.thumb
-		};
-	}
-	throw new Error('Okatsu ytmp3 returned no download');
-}
-
-async function songCommand(sock, chatId, message) {
     try {
-        const text = message.message?.conversation || message.message?.extendedTextMessage?.text || '';
-        if (!text) {
-            await sock.sendMessage(chatId, { text: 'Usage: .song <song name or YouTube link>' }, { quoted: message });
-            return;
+        console.log('[SONG] Searching YT for:', query);
+        const search = await yts(query);
+        const video = search.videos[0];
+
+        if (!video) {
+            return sock.sendMessage(chatId, {
+                text: 'No results found for your query.'
+            }, { quoted: msg });
         }
 
-        let video;
-        if (text.includes('youtube.com') || text.includes('youtu.be')) {
-			video = { url: text };
-        } else {
-			const search = await yts(text);
-			if (!search || !search.videos.length) {
-                await sock.sendMessage(chatId, { text: 'No results found.' }, { quoted: message });
-                return;
-            }
-			video = search.videos[0];
+        const safeTitle = video.title.replace(/[\\/:*?"<>|]/g, '');
+        const fileName = `${safeTitle}.mp3`;
+        const apiURL = `${BASE_URL}/dipto/ytDl3?link=${encodeURIComponent(video.videoId)}&format=mp3`;
+
+        const response = await axios.get(apiURL);
+        const data = response.data;
+
+        if (!data.downloadLink) {
+            return sock.sendMessage(chatId, {
+                text: 'Failed to retrieve the MP3 download link.'
+            }, { quoted: msg });
         }
 
-        // Inform user
-        await sock.sendMessage(chatId, {
+        const message = {
             image: { url: video.thumbnail },
-            caption: `🎵 Downloading: *${video.title}*\n⏱ Duration: ${video.timestamp}`
-        }, { quoted: message });
+            caption:
+                `*FLASH-MD SONG PLAYER*\n\n` +
+                `╭───────────────◆\n` +
+                `│⿻ *Title:* ${video.title}\n` +
+                `│⿻ *Duration:* ${video.timestamp}\n` +
+                `│⿻ *Views:* ${video.views.toLocaleString()}\n` +
+                `│⿻ *Uploaded:* ${video.ago}\n` +
+                `│⿻ *Channel:* ${video.author.name}\n` +
+                `╰────────────────◆\n\n` +
+                `🔗 ${video.url}`,
+            ...channelInfo
+        };
 
-		// Try Izumi primary by URL, then by query, then Okatsu fallback
-		let audioData;
-		try {
-			// 1) Primary: Izumi by youtube url
-			audioData = await getIzumiDownloadByUrl(video.url);
-		} catch (e1) {
-			try {
-				// 2) Secondary: Izumi search by query/title
-				const query = video.title || text;
-				audioData = await getIzumiDownloadByQuery(query);
-			} catch (e2) {
-				// 3) Fallback: Okatsu by youtube url
-				audioData = await getOkatsuDownloadByUrl(video.url);
-			}
-		}
+        await sock.sendMessage(chatId, message, { quoted: msg });
 
-		await sock.sendMessage(chatId, {
-			audio: { url: audioData.download || audioData.dl || audioData.url },
-			mimetype: 'audio/mpeg',
-			fileName: `${(audioData.title || video.title || 'song')}.mp3`,
-			ptt: false
-		}, { quoted: message });
+        await sock.sendMessage(chatId, {
+            document: { url: data.downloadLink },
+            mimetype: 'audio/mpeg',
+            fileName,
+            caption: '*FLASH-MD V2*',
+            ...channelInfo
+        }, { quoted: msg });
 
     } catch (err) {
-        console.error('Song command error:', err);
-        await sock.sendMessage(chatId, { text: '❌ Failed to download song.' }, { quoted: message });
+        console.error('[SONG] Error:', err);
+        await sock.sendMessage(chatId, {
+            text: 'An error occurred while processing your request.'
+        }, { quoted: msg });
     }
-}
-
-module.exports = songCommand;
+};

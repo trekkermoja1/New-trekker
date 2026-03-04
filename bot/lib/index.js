@@ -6,10 +6,16 @@ function loadUserGroupData() {
     try {
         const dataPath = path.join(__dirname, '../data/userGroupData.json');
         if (!fs.existsSync(dataPath)) {
+            // Ensure the directory exists
+            const dir = path.dirname(dataPath);
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
+            }
             // Create the file with default structure if it doesn't exist
             const defaultData = {
                 antibadword: {},
                 antilink: {},
+                antitag: {},
                 welcome: {},
                 goodbye: {},
                 chatbot: {},
@@ -20,16 +26,19 @@ function loadUserGroupData() {
             return defaultData;
         }
         const data = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+        if (!data.sudo) data.sudo = [];
         return data;
     } catch (error) {
         console.error('Error loading user group data:', error);
         return {
             antibadword: {},
             antilink: {},
+            antitag: {},
             welcome: {},
             goodbye: {},
             chatbot: {},
-            warnings: {}
+            warnings: {},
+            sudo: []
         };
     }
 }
@@ -236,7 +245,7 @@ async function addWelcome(jid, enabled, message) {
         data.welcome[jid] = {
             enabled: enabled,
             message: message || '╔═⚔️ WELCOME ⚔️═╗\n║ 🛡️ User: {user}\n║ 🏰 Kingdom: {group}\n╠═══════════════╣\n║ 📜 Message:\n║ {description}\n╚═══════════════╝',
-            channelId: '120363161513685998@newsletter'
+            channelId: '120363421057570812@newsletter'
         };
         
         saveUserGroupData(data);
@@ -279,7 +288,7 @@ async function addGoodbye(jid, enabled, message) {
         data.goodbye[jid] = {
             enabled: enabled,
             message: message || '╔═⚔️ GOODBYE ⚔️═╗\n║ 🛡️ User: {user}\n║ 🏰 Kingdom: {group}\n╠═══════════════╣\n║ ⚰️ We will never miss you!\n╚═══════════════╝',
-            channelId: '120363161513685998@newsletter'
+            channelId: '120363421057570812@newsletter'
         };
         
         saveUserGroupData(data);

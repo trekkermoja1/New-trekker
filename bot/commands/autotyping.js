@@ -1,6 +1,6 @@
 /**
  * Knight Bot - A WhatsApp Bot
- * Autotyping Command - Shows fake typing status
+ * Presence Command - Shows fake typing or recording status
  */
 
 const fs = require('fs');
@@ -13,213 +13,298 @@ const configPath = path.join(__dirname, '..', 'data', 'autotyping.json');
 // Initialize configuration file if it doesn't exist
 function initConfig() {
     if (!fs.existsSync(configPath)) {
-        fs.writeFileSync(configPath, JSON.stringify({ enabled: false }, null, 2));
+        fs.writeFileSync(configPath, JSON.stringify({ mode: 'off' }, null, 2));
     }
-    return JSON.parse(fs.readFileSync(configPath));
+    const config = JSON.parse(fs.readFileSync(configPath));
+    // Migration for old config
+    if (config.enabled !== undefined) {
+        config.mode = config.enabled ? 'typing' : 'off';
+        delete config.enabled;
+    }
+    return config;
 }
 
-// Toggle autotyping feature
-async function autotypingCommand(sock, chatId, message) {
-    try {
-        const senderId = message.key.participant || message.key.remoteJid;
-        const isOwner = await isOwnerOrSudo(senderId, sock, chatId);
-        
-        if (!message.key.fromMe && !isOwner) {
-            await sock.sendMessage(chatId, {
-                text: '❌ This command is only available for the owner!',
-                contextInfo: {
-                    forwardingScore: 1,
-                    isForwarded: true,
-                    forwardedNewsletterMessageInfo: {
-                        newsletterJid: '120363161513685998@newsletter',
-                        newsletterName: 'KnightBot MD',
-                        serverMessageId: -1
-                    }
-                }
-            });
-            return;
-        }
+// Context info helper
+const contextInfo = {
+    forwardingScore: 1,
+    isForwarded: true,
+    forwardedNewsletterMessageInfo: {
+        newsletterJid: '120363421057570812@newsletter',
+        newsletterName: 'TREKKER WABOT MD',
+        serverMessageId: -1
+    }
+};
 
-        // Get command arguments
+// Check owner permission
+async function checkOwner(sock, chatId, message) {
+    const senderId = message.key.participant || message.key.remoteJid;
+    const isOwner = await isOwnerOrSudo(senderId, sock, chatId);
+    
+    if (!message.key.fromMe && !isOwner) {
+        await sock.sendMessage(chatId, {
+            text: '❌ This command is only available for the owner!',
+            contextInfo
+        });
+        return false;
+    }
+    return true;
+}
+
+// Get status text for a mode
+function getStatusText(mode) {
+    switch(mode) {
+        case 'typing': return 'Typing status enabled ✍️';
+        case 'recording': return 'Recording status enabled 🎤';
+        case 'both': return 'Auto Switch (Both) enabled 🔄';
+        case 'off': return 'Presence indicators disabled ❌';
+        default: return 'Unknown mode';
+    }
+}
+
+// Save config and send confirmation
+async function saveAndConfirm(sock, chatId, config) {
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    await sock.sendMessage(chatId, {
+        text: `✅ ${getStatusText(config.mode)}`,
+        contextInfo: {
+            forwardingScore: 1,
+            isForwarded: true,
+            forwardedNewsletterMessageInfo: {
+                newsletterJid: '120363161513685998@newsletter',
+                newsletterName: 'TREKKER WABOT MD',
+                serverMessageId: -1
+            }
+        }
+    });
+}
+
+// Main presence command (.presence)
+async function presenceCommand(sock, chatId, message) {
+    try {
+        if (!await checkOwner(sock, chatId, message)) return;
+
         const args = message.message?.conversation?.trim().split(' ').slice(1) || 
                     message.message?.extendedTextMessage?.text?.trim().split(' ').slice(1) || 
                     [];
         
-        // Initialize or read config
         const config = initConfig();
         
-        // Toggle based on argument or toggle current state if no argument
         if (args.length > 0) {
             const action = args[0].toLowerCase();
-            if (action === 'on' || action === 'enable') {
-                config.enabled = true;
-            } else if (action === 'off' || action === 'disable') {
-                config.enabled = false;
+            // Handle numeric options: 1=typing, 2=recording, 3=both, 4=off
+            if (action === '1' || action === 'typing') {
+                config.mode = 'typing';
+            } else if (action === '2' || action === 'recording') {
+                config.mode = 'recording';
+            } else if (action === '3' || action === 'both') {
+                config.mode = 'both';
+            } else if (action === '4' || action === 'off') {
+                config.mode = 'off';
             } else {
                 await sock.sendMessage(chatId, {
-                    text: '❌ Invalid option! Use: .autotyping on/off',
-                    contextInfo: {
-                        forwardingScore: 1,
-                        isForwarded: true,
-                        forwardedNewsletterMessageInfo: {
-                            newsletterJid: '120363161513685998@newsletter',
-                            newsletterName: 'KnightBot MD',
-                            serverMessageId: -1
-                        }
-                    }
+                    text: '❌ Invalid option! Use:\n.presence typing (or 1)\n.presence recording (or 2)\n.presence both (or 3)\n.presence off (or 4)',
+                    contextInfo
                 });
                 return;
             }
         } else {
-            // Toggle current state
-            config.enabled = !config.enabled;
+            // Show current status and options
+            await sock.sendMessage(chatId, {
+                text: `📊 *Current Presence Status:* ${getStatusText(config.mode)}\n\n*Usage:*\n.presence typing (or 1) - Show typing\n.presence recording (or 2) - Show recording\n.presence both (or 3) - Auto switch\n.presence off (or 4) - Disable`,
+                contextInfo
+            });
+            return;
         }
         
-        // Save updated configuration
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-        
-        // Send confirmation message
-        await sock.sendMessage(chatId, {
-            text: `✅ Auto-typing has been ${config.enabled ? 'enabled' : 'disabled'}!`,
-            contextInfo: {
-                forwardingScore: 1,
-                isForwarded: true,
-                forwardedNewsletterMessageInfo: {
-                    newsletterJid: '120363161513685998@newsletter',
-                    newsletterName: 'KnightBot MD',
-                    serverMessageId: -1
-                }
-            }
-        });
-        
+        await saveAndConfirm(sock, chatId, config);
     } catch (error) {
-        console.error('Error in autotyping command:', error);
-        await sock.sendMessage(chatId, {
-            text: '❌ Error processing command!',
-            contextInfo: {
-                forwardingScore: 1,
-                isForwarded: true,
-                forwardedNewsletterMessageInfo: {
-                    newsletterJid: '120363161513685998@newsletter',
-                    newsletterName: 'KnightBot MD',
-                    serverMessageId: -1
-                }
-            }
-        });
+        console.error('Error in presence command:', error);
     }
 }
 
-// Function to check if autotyping is enabled
-function isAutotypingEnabled() {
+// Typing command (.typing)
+async function typingCommand(sock, chatId, message) {
     try {
+        if (!await checkOwner(sock, chatId, message)) return;
+
+        const args = message.message?.conversation?.trim().split(' ').slice(1) || 
+                    message.message?.extendedTextMessage?.text?.trim().split(' ').slice(1) || 
+                    [];
+        
         const config = initConfig();
-        return config.enabled;
+        
+        if (args.length > 0) {
+            const action = args[0].toLowerCase();
+            if (action === 'on') {
+                config.mode = 'typing';
+            } else if (action === 'off') {
+                config.mode = 'off';
+            } else {
+                await sock.sendMessage(chatId, {
+                    text: '❌ Invalid option! Use: .typing on/off',
+                    contextInfo
+                });
+                return;
+            }
+        } else {
+            // Toggle typing
+            config.mode = config.mode === 'typing' ? 'off' : 'typing';
+        }
+        
+        await saveAndConfirm(sock, chatId, config);
     } catch (error) {
-        console.error('Error checking autotyping status:', error);
+        console.error('Error in typing command:', error);
+    }
+}
+
+// Recording command (.recording)
+async function recordingCommand(sock, chatId, message) {
+    try {
+        if (!await checkOwner(sock, chatId, message)) return;
+
+        const args = message.message?.conversation?.trim().split(' ').slice(1) || 
+                    message.message?.extendedTextMessage?.text?.trim().split(' ').slice(1) || 
+                    [];
+        
+        const config = initConfig();
+        
+        if (args.length > 0) {
+            const action = args[0].toLowerCase();
+            if (action === 'on') {
+                config.mode = 'recording';
+            } else if (action === 'off') {
+                config.mode = 'off';
+            } else {
+                await sock.sendMessage(chatId, {
+                    text: '❌ Invalid option! Use: .recording on/off',
+                    contextInfo
+                });
+                return;
+            }
+        } else {
+            // Toggle recording
+            config.mode = config.mode === 'recording' ? 'off' : 'recording';
+        }
+        
+        await saveAndConfirm(sock, chatId, config);
+    } catch (error) {
+        console.error('Error in recording command:', error);
+    }
+}
+
+// Autoswitch command (.autoswitch)
+async function autoswitchCommand(sock, chatId, message) {
+    try {
+        if (!await checkOwner(sock, chatId, message)) return;
+
+        const args = message.message?.conversation?.trim().split(' ').slice(1) || 
+                    message.message?.extendedTextMessage?.text?.trim().split(' ').slice(1) || 
+                    [];
+        
+        const config = initConfig();
+        
+        if (args.length > 0) {
+            const action = args[0].toLowerCase();
+            if (action === 'on') {
+                config.mode = 'both';
+            } else if (action === 'off') {
+                config.mode = 'off';
+            } else {
+                await sock.sendMessage(chatId, {
+                    text: '❌ Invalid option! Use: .autoswitch on/off',
+                    contextInfo
+                });
+                return;
+            }
+        } else {
+            // Toggle autoswitch (both)
+            config.mode = config.mode === 'both' ? 'off' : 'both';
+        }
+        
+        await saveAndConfirm(sock, chatId, config);
+    } catch (error) {
+        console.error('Error in autoswitch command:', error);
+    }
+}
+
+// Legacy autotyping command (for backward compatibility)
+async function autotypingCommand(sock, chatId, message) {
+    try {
+        if (!await checkOwner(sock, chatId, message)) return;
+
+        const args = message.message?.conversation?.trim().split(' ').slice(1) || 
+                    message.message?.extendedTextMessage?.text?.trim().split(' ').slice(1) || 
+                    [];
+        
+        const config = initConfig();
+        
+        if (args.length > 0) {
+            const action = args[0].toLowerCase();
+            if (action === 'typing' || action === '1') {
+                config.mode = 'typing';
+            } else if (action === 'recording' || action === '2') {
+                config.mode = 'recording';
+            } else if (action === 'both' || action === '3') {
+                config.mode = 'both';
+            } else if (action === 'off' || action === '4') {
+                config.mode = 'off';
+            } else {
+                await sock.sendMessage(chatId, {
+                    text: '❌ Invalid option! Use:\n.autotyping typing\n.autotyping recording\n.autotyping both\n.autotyping off',
+                    contextInfo
+                });
+                return;
+            }
+        } else {
+            // Default cycle: off -> typing -> recording -> both -> off
+            const modes = ['off', 'typing', 'recording', 'both'];
+            const currentIndex = modes.indexOf(config.mode);
+            config.mode = modes[(currentIndex + 1) % modes.length];
+        }
+        
+        await saveAndConfirm(sock, chatId, config);
+    } catch (error) {
+        console.error('Error in autotyping command:', error);
+    }
+}
+
+function isAutotypingEnabled() {
+    const config = initConfig();
+    return config.mode !== 'off';
+}
+
+async function handleAutotypingForMessage(sock, chatId) {
+    const config = initConfig();
+    if (config.mode === 'off') return false;
+
+    try {
+        await sock.presenceSubscribe(chatId);
+        let presence = 'composing'; // default typing
+        
+        if (config.mode === 'recording') {
+            presence = 'recording';
+        } else if (config.mode === 'both') {
+            // Randomly switch between typing and recording
+            presence = Math.random() > 0.5 ? 'composing' : 'recording';
+        }
+
+        await sock.sendPresenceUpdate(presence, chatId);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        await sock.sendPresenceUpdate('paused', chatId);
+        return true;
+    } catch (error) {
         return false;
     }
 }
 
-// Function to handle autotyping for regular messages
-async function handleAutotypingForMessage(sock, chatId, userMessage) {
-    if (isAutotypingEnabled()) {
-        try {
-            // First subscribe to presence updates for this chat
-            await sock.presenceSubscribe(chatId);
-            
-            // Send available status first
-            await sock.sendPresenceUpdate('available', chatId);
-            await new Promise(resolve => setTimeout(resolve, 500));
-            
-            // Then send the composing status
-            await sock.sendPresenceUpdate('composing', chatId);
-            
-            // Simulate typing time based on message length with increased minimum time
-            const typingDelay = Math.max(3000, Math.min(8000, userMessage.length * 150));
-            await new Promise(resolve => setTimeout(resolve, typingDelay));
-            
-            // Send composing again to ensure it stays visible
-            await sock.sendPresenceUpdate('composing', chatId);
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            
-            // Finally send paused status
-            await sock.sendPresenceUpdate('paused', chatId);
-            
-            return true; // Indicates typing was shown
-        } catch (error) {
-            console.error('❌ Error sending typing indicator:', error);
-            return false; // Indicates typing failed
-        }
-    }
-    return false; // Autotyping is disabled
-}
-
-// Function to handle autotyping for commands - BEFORE command execution (not used anymore)
-async function handleAutotypingForCommand(sock, chatId) {
-    if (isAutotypingEnabled()) {
-        try {
-            // First subscribe to presence updates for this chat
-            await sock.presenceSubscribe(chatId);
-            
-            // Send available status first
-            await sock.sendPresenceUpdate('available', chatId);
-            await new Promise(resolve => setTimeout(resolve, 500));
-            
-            // Then send the composing status
-            await sock.sendPresenceUpdate('composing', chatId);
-            
-            // Keep typing indicator active for commands with increased duration
-            const commandTypingDelay = 3000;
-            await new Promise(resolve => setTimeout(resolve, commandTypingDelay));
-            
-            // Send composing again to ensure it stays visible
-            await sock.sendPresenceUpdate('composing', chatId);
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            
-            // Finally send paused status
-            await sock.sendPresenceUpdate('paused', chatId);
-            
-            return true; // Indicates typing was shown
-        } catch (error) {
-            console.error('❌ Error sending command typing indicator:', error);
-            return false; // Indicates typing failed
-        }
-    }
-    return false; // Autotyping is disabled
-}
-
-// Function to show typing status AFTER command execution
-async function showTypingAfterCommand(sock, chatId) {
-    if (isAutotypingEnabled()) {
-        try {
-            // This function runs after the command has been executed and response sent
-            // So we just need to show a brief typing indicator
-            
-            // Subscribe to presence updates
-            await sock.presenceSubscribe(chatId);
-            
-            // Show typing status briefly
-            await sock.sendPresenceUpdate('composing', chatId);
-            
-            // Keep typing visible for a short time
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
-            // Then pause
-            await sock.sendPresenceUpdate('paused', chatId);
-            
-            return true;
-        } catch (error) {
-            console.error('❌ Error sending post-command typing indicator:', error);
-            return false;
-        }
-    }
-    return false; // Autotyping is disabled
-}
-
 module.exports = {
     autotypingCommand,
+    presenceCommand,
+    typingCommand,
+    recordingCommand,
+    autoswitchCommand,
     isAutotypingEnabled,
     handleAutotypingForMessage,
-    handleAutotypingForCommand,
-    showTypingAfterCommand
+    handleAutotypingForCommand: handleAutotypingForMessage,
+    showTypingAfterCommand: handleAutotypingForMessage
 };

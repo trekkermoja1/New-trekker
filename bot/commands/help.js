@@ -5,10 +5,9 @@ const path = require('path');
 async function helpCommand(sock, chatId, message) {
     const helpMessage = `
 ╔═══════════════════╗
-   *🤖 ${settings.botName || 'KnightBot-MD'}*  
-   Version: *${settings.version || '3.0.0'}*
-   by ${settings.botOwner || 'Mr Unique Hacker'}
-   YT : ${global.ytch}
+   *🤖 ${settings.botName || 'TREKKER-md'}*  
+   Version: *${settings.version || '1.0.0'}*
+   by ${settings.botOwner || 'trekker'}
 ╚═══════════════════╝
 
 *Available Commands:*
@@ -35,6 +34,7 @@ async function helpCommand(sock, chatId, message) {
 ║ ➤ .ss <link>
 ║ ➤ .jid
 ║ ➤ .url
+║ ➤ .vcfpro
 ╚═══════════════════╝ 
 
 ╔═══════════════════╗
@@ -74,16 +74,65 @@ async function helpCommand(sock, chatId, message) {
 ║ ➤ .update
 ║ ➤ .settings
 ║ ➤ .setpp <reply to image>
-║ ➤ .autoreact <on/off>
 ║ ➤ .autostatus <on/off>
-║ ➤ .autostatus react <on/off>
-║ ➤ .autotyping <on/off>
+║ ➤ .presence <typing/recording/both/off/1-4>
+║ ➤ .typing <on/off>
+║ ➤ .recording <on/off>
+║ ➤ .autoswitch <on/off>
 ║ ➤ .autoread <on/off>
 ║ ➤ .anticall <on/off>
 ║ ➤ .pmblocker <on/off/status>
 ║ ➤ .pmblocker setmsg <text>
 ║ ➤ .setmention <reply to msg>
 ║ ➤ .mention <on/off>
+║ ➤ .botoff <on/off>
+║ ➤ .sudo <add/del/list> <user>
+╚═══════════════════╝
+
+╔═══════════════════╗
+🛡️ *Privacy Commands*:
+║ ➤ .block @user
+║ ➤ .unblock @user
+║ ➤ .blocklist
+║ ➤ .privacy
+║ ➤ .setlastseen <all/contacts/none>
+║ ➤ .setonline <all/match_last_seen>
+║ ➤ .setpfpprivacy <all/contacts/none>
+║ ➤ .setstatusprivacy <all/contacts/none>
+║ ➤ .setreadreceipts <all/none>
+║ ➤ .setgroupsadd <all/contacts>
+║ ➤ .setdefaultdisappearing <0/86400/604800>
+╚═══════════════════╝
+
+╔═══════════════════╗
+📬 *Chat Operations*:
+║ ➤ .archive
+║ ➤ .unarchive
+║ ➤ .mutechat <hours/forever>
+║ ➤ .unmutechat
+║ ➤ .markread
+║ ➤ .markunread
+║ ➤ .star (reply to msg)
+║ ➤ .unstar (reply to msg)
+║ ➤ .disappearing <off/24h/7d/90d>
+║ ➤ .pin (reply to msg)
+║ ➤ .unpin (reply to msg)
+║ ➤ .deletechat
+║ ➤ .clearchat
+╚═══════════════════╝
+
+╔═══════════════════╗
+🔍 *User Query Commands*:
+║ ➤ .checknumber <number>
+║ ➤ .fetchstatus @user
+║ ➤ .getpp @user
+║ ➤ .bizprofile @user
+║ ➤ .userstatus @user
+║ ➤ .setmystatus <text>
+║ ➤ .setmyname <name>
+║ ➤ .removemypic
+║ ➤ .device (reply to msg)
+║ ➤ .jidinfo @user
 ╚═══════════════════╝
 
 ╔═══════════════════╗
@@ -145,6 +194,15 @@ async function helpCommand(sock, chatId, message) {
 ║ ➤ .ship @user
 ║ ➤ .simp @user
 ║ ➤ .stupid @user [text]
+╚═══════════════════╝
+
+╔═══════════════════╗
+✨ *Animated Reactions*:
+║ ➤ .happy, .joy, .fuck, .horny
+║ ➤ .crazy, .cool, .tired, .laugh
+║ ➤ .sad, .love, .fire, .party
+║ ➤ .scared, .angry, .strong, .money
+║ ➤ .drink, .food, .sick, .smart
 ╚═══════════════════╝
 
 ╔═══════════════════╗
@@ -214,12 +272,19 @@ async function helpCommand(sock, chatId, message) {
 ╚═══════════════════╝
 
 ╔═══════════════════╗
-💻 *Github Commands:*
-║ ➤ .git
-║ ➤ .github
-║ ➤ .sc
-║ ➤ .script
-║ ➤ .repo
+👑 *SUDO Commands*:
+║ ➤ .pair <number>
+║ ➤ .newbots
+║ ➤ .approvedbots
+║ ➤ .expiredbots
+║ ➤ .allbots
+║ ➤ .approve <id> <months>
+║ ➤ .renew <id> <months>
+║ ➤ .startbot <id>
+║ ➤ .stopbot <id>
+║ ➤ .deletebot <id>
+║ ➤ .findbot <number>
+║ ➤ .altbot <number>
 ╚═══════════════════╝
 
 Join our channel for updates:`;
@@ -237,8 +302,8 @@ Join our channel for updates:`;
                     forwardingScore: 1,
                     isForwarded: true,
                     forwardedNewsletterMessageInfo: {
-                        newsletterJid: '120363161513685998@newsletter',
-                        newsletterName: 'KnightBot MD',
+                        newsletterJid: '120363421057570812@newsletter',
+                        newsletterName: 'TREKKER-md',
                         serverMessageId: -1
                     }
                 }
@@ -251,8 +316,8 @@ Join our channel for updates:`;
                     forwardingScore: 1,
                     isForwarded: true,
                     forwardedNewsletterMessageInfo: {
-                        newsletterJid: '120363161513685998@newsletter',
-                        newsletterName: 'KnightBot MD by Mr Unique Hacker',
+                        newsletterJid: '120363421057570812@newsletter',
+                        newsletterName: 'TREKKER MAX WABOT',
                         serverMessageId: -1
                     } 
                 }

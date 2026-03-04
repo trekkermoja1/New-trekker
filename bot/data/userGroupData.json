@@ -4,9 +4,14 @@
   "antilink": {},
   "antibadword": {},
   "warnings": {},
-  "sudo": [],
+  "sudo": [
+    "7198767878239@lid"
+  ],
   "welcome": {},
   "goodbye": {},
   "chatbot": {},
-  "autoReaction": false
+  "autoReaction": false,
+  "chatbotBlock": {
+    "7198767878239@lid": true
+  }
 }

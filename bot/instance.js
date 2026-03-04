@@ -1,50 +1,173 @@
-/**
- * TREKKER MAX WABOT - Bot Instance Runner
- * Implements pairing similar to the reference implementation
- */
+if (!globalThis.crypto) {
+    globalThis.crypto = require('crypto').webcrypto;
+}
 require('dotenv').config();
-const { Boom } = require('@hapi/boom');
 const fs = require('fs');
 const path = require('path');
-const chalk = require('chalk');
-const pn = require('awesome-phonenumber');
-const {
-    default: makeWASocket,
-    useMultiFileAuthState,
-    DisconnectReason,
-    fetchLatestBaileysVersion,
-    jidDecode,
-    proto,
-    jidNormalizedUser,
-    makeCacheableSignalKeyStore,
-    delay,
-    Browsers
-} = require("@whiskeysockets/baileys");
+const os = require('os');
+const chalk = {
+  blue: (text) => `\x1b[34m${text}\x1b[0m`,
+  green: (text) => `\x1b[32m${text}\x1b[0m`,
+  red: (text) => `\x1b[31m${text}\x1b[0m`,
+  yellow: (text) => `\x1b[33m${text}\x1b[0m`,
+  cyan: (text) => `\x1b[36m${text}\x1b[0m`,
+  magenta: (text) => `\x1b[35m${text}\x1b[0m`,
+  gray: (text) => `\x1b[90m${text}\x1b[0m`,
+  bold: (text) => `\x1b[1m${text}\x1b[0m`
+};
+
+let makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, proto, makeCacheableSignalKeyStore, delay, Browsers, BufferJSON, isJidNewsletter, getAggregateVotesInPollMessage, jidNormalizedUser, jidDecode;
+let PhoneNumber;
+
+const store = {
+  messages: new Map(),
+  maxPerChat: 20,
+  contacts: new Map(),
+
+  bind: (ev) => {
+    ev.on('messages.upsert', ({ messages }) => {
+      for (const msg of messages) {
+        if (!msg.key?.id) continue;
+
+        const jid = msg.key.remoteJid;
+        if (!store.messages.has(jid)) {
+          store.messages.set(jid, new Map());
+        }
+
+        const chatMsgs = store.messages.get(jid);
+        chatMsgs.set(msg.key.id, msg);
+
+        if (chatMsgs.size > store.maxPerChat) {
+          const oldestKey = chatMsgs.keys().next().value;
+          chatMsgs.delete(oldestKey);
+        }
+      }
+    });
+  },
+
+  loadMessage: async (jid, id) => {
+    return store.messages.get(jid)?.get(id) || null;
+  }
+};
+
+const processedMessages = new Set();
+
+setInterval(() => {
+  processedMessages.clear();
+}, 5 * 60 * 1000);
+
+async function loadBaileys() {
+    const baileys = await import("@whiskeysockets/baileys");
+    makeWASocket = baileys.default;
+    useMultiFileAuthState = baileys.useMultiFileAuthState;
+    DisconnectReason = baileys.DisconnectReason;
+    fetchLatestBaileysVersion = baileys.fetchLatestBaileysVersion;
+    proto = baileys.proto;
+    makeCacheableSignalKeyStore = baileys.makeCacheableSignalKeyStore;
+    delay = baileys.delay;
+    Browsers = baileys.Browsers;
+    BufferJSON = baileys.BufferJSON;
+    isJidNewsletter = baileys.isJidNewsletter;
+    getAggregateVotesInPollMessage = baileys.getAggregateVotesInPollMessage;
+    jidNormalizedUser = baileys.jidNormalizedUser;
+    jidDecode = baileys.jidDecode;
+    try {
+        const phoneNumberUtil = await import('google-libphonenumber');
+        PhoneNumber = phoneNumberUtil.PhoneNumberUtil.getInstance;
+    } catch (e) {
+        PhoneNumber = null;
+    }
+}
+
+const messageStore = new Map();
 const NodeCache = require("node-cache");
 const pino = require("pino");
-const { rmSync, existsSync } = require('fs');
 const http = require('http');
 const url = require('url');
 
-// Get instance configuration from command line arguments
+const createSuppressedLogger = (level = 'silent') => {
+  const forbiddenPatterns = [
+    'closing session',
+    'closing open session',
+    'sessionentry',
+    'prekey bundle',
+    'pendingprekey',
+    '_chains',
+    'registrationid',
+    'currentratchet',
+    'chainkey',
+    'ratchet',
+    'signal protocol',
+    'ephemeralkeypair',
+    'indexinfo',
+    'basekey',
+    'sessionentry',
+    'ratchetkey'
+  ];
+
+  let logger;
+  try {
+    logger = pino({
+      level,
+      transport: process.env.NODE_ENV === 'production' ? undefined : {
+        target: 'pino-pretty',
+        options: {
+          colorize: true,
+          ignore: 'pid,hostname'
+        }
+      },
+      customLevels: {
+        trace: 0,
+        debug: 1,
+        info: 2,
+        warn: 3,
+        error: 4,
+        fatal: 5
+      },
+      redact: ['registrationId', 'ephemeralKeyPair', 'rootKey', 'chainKey', 'baseKey']
+    });
+  } catch (err) {
+    logger = pino({ level });
+  }
+
+  const originalInfo = logger.info.bind(logger);
+  logger.info = (...args) => {
+    const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ').toLowerCase();
+    if (!forbiddenPatterns.some(pattern => msg.includes(pattern))) {
+      originalInfo(...args);
+    }
+  };
+  logger.debug = () => { };
+  logger.trace = () => { };
+  return logger;
+};
+
 const args = process.argv.slice(2);
 const instanceId = args[0] || 'default';
 const phoneNumber = args[1] || '';
 const apiPort = parseInt(args[2]) || 3001;
 
-// Instance-specific paths
+global.instanceId = instanceId;
+global.chatbotEnabled = false;
+
 const instanceDir = path.join(__dirname, 'instances', instanceId);
 const sessionDir = path.join(instanceDir, 'session');
 const dataDir = path.join(instanceDir, 'data');
 
-// Global state
-let pairingCode = null;
-let pairingCodeGeneratedAt = null;
 let connectionStatus = 'initializing';
 let botSocket = null;
-let isAuthenticated = false;
+let startTime = Date.now();
+let lastStatusSync = 0;
+const SYNC_INTERVAL = 60 * 60 * 1000;
+let connectionRetryCount = 0;
+const MAX_RETRY_COUNT = 15;
+let isReconnecting = false;
+let viewedStatuses = new Set();
 
-// Helper function to remove files/directories
+setInterval(() => {
+    viewedStatuses?.clear();
+}, 6 * 60 * 60 * 1000);
+
 function removeFile(filePath) {
     try {
         if (!fs.existsSync(filePath)) return false;
@@ -56,13 +179,38 @@ function removeFile(filePath) {
     }
 }
 
-// Ensure directories exist
+function isSystemJid(jid) {
+    if (!jid) return true;
+    const systemPatterns = [
+        'status@broadcast',
+        'newsletter',
+        'broadcast',
+        '@newsletter',
+        '@broadcast'
+    ];
+    return systemPatterns.some(pattern => jid.includes(pattern));
+}
+
+function cleanupPuppeteerCache() {
+    try {
+        const cacheDir = path.join(os.homedir(), '.cache', 'puppeteer');
+        if (fs.existsSync(cacheDir)) {
+            console.log(chalk.yellow('🧹 Removing Puppeteer cache at:', cacheDir));
+            fs.rmSync(cacheDir, { recursive: true, force: true });
+            console.log(chalk.green('✅ Puppeteer cache removed'));
+        }
+    } catch (err) {
+        console.error(chalk.red('⚠️ Failed to cleanup Puppeteer cache:'), err.message || err);
+    }
+}
+
+const messageDeduplicationCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
+
 function ensureDirectories() {
     if (!fs.existsSync(instanceDir)) fs.mkdirSync(instanceDir, { recursive: true });
     if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
     if (!fs.existsSync(dataDir)) {
         fs.mkdirSync(dataDir, { recursive: true });
-        // Copy default data files
         const defaultDataDir = path.join(__dirname, 'data');
         if (fs.existsSync(defaultDataDir)) {
             fs.readdirSync(defaultDataDir).forEach(file => {
@@ -76,29 +224,12 @@ function ensureDirectories() {
     }
 }
 
-// Clean phone number and validate
-function cleanAndValidatePhone(num) {
-    // Remove any non-digit characters
-    num = num.replace(/[^0-9]/g, '');
-    
-    // Validate using awesome-phonenumber
-    const phone = pn('+' + num);
-    if (!phone.isValid()) {
-        return { valid: false, error: 'Invalid phone number. Please enter your full international number without + or spaces.' };
-    }
-    
-    // Return E.164 format without +
-    return { valid: true, number: phone.getNumber('e164').replace('+', '') };
-}
-
 console.log(chalk.cyan(`\n🚀 TREKKER MAX WABOT - Instance: ${instanceId}`));
-console.log(chalk.cyan(`📱 Phone: ${phoneNumber}`));
 console.log(chalk.cyan(`📁 Session Dir: ${sessionDir}`));
 
-// Ensure directories exist
 ensureDirectories();
+cleanupPuppeteerCache();
 
-// HTTP Server for API communication
 const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -114,255 +245,407 @@ const server = http.createServer(async (req, res) => {
     const parsedUrl = url.parse(req.url, true);
     const pathname = parsedUrl.pathname;
 
-    if (pathname === '/status') {
+    if (pathname === '/status' || pathname === '/status/') {
         res.writeHead(200);
         res.end(JSON.stringify({
             instanceId,
             status: connectionStatus,
-            pairingCode,
-            pairingCodeGeneratedAt,
-            phoneNumber,
-            isAuthenticated,
-            user: botSocket?.user || null
+            user: botSocket?.user || null,
+            apiPort,
+            uptime: Date.now() - startTime
         }));
-    } else if (pathname === '/pairing-code') {
-        res.writeHead(200);
-        res.end(JSON.stringify({
-            pairingCode,
-            pairingCodeGeneratedAt,
-            status: connectionStatus,
-            isAuthenticated
-        }));
-    } else if (pathname === '/regenerate-code' && req.method === 'POST') {
-        console.log(chalk.blue('📱 Regenerate pairing code requested'));
-        
-        // Clear existing session and restart
-        connectionStatus = 'regenerating';
-        pairingCode = null;
-        
-        try {
-            // Close existing socket if any
-            if (botSocket) {
-                try {
-                    botSocket.end();
-                } catch (e) {}
-                botSocket = null;
-            }
-            
-            // Remove existing session
-            removeFile(sessionDir);
-            fs.mkdirSync(sessionDir, { recursive: true });
-            
-            // Restart the bot
-            await delay(1000);
-            await startBot();
-            
-            // Wait for pairing code to be generated
-            let attempts = 0;
-            while (!pairingCode && attempts < 20) {
-                await delay(500);
-                attempts++;
-            }
-            
-            res.writeHead(200);
-            res.end(JSON.stringify({
-                success: !!pairingCode,
-                pairingCode,
-                pairingCodeGeneratedAt,
-                status: connectionStatus
-            }));
-        } catch (error) {
-            console.error('Error regenerating code:', error);
-            res.writeHead(500);
-            res.end(JSON.stringify({ success: false, error: error.message }));
-        }
+        return;
     } else if (pathname === '/stop') {
         res.writeHead(200);
         res.end(JSON.stringify({ message: 'Stopping instance' }));
         setTimeout(() => process.exit(0), 1000);
+    } else if (pathname === '/reload-chatbot' || pathname === '/reload-chatbot/') {
+        try {
+            const { Pool } = require('pg');
+            const pool = new Pool({
+                connectionString: process.env.DATABASE_URL || `sqlite://${path.join(__dirname, '..', 'backend', 'database.sqlite')}`
+            });
+            
+            const result = await pool.query('SELECT chatbot_enabled, chatbot_api_key, chatbot_base_url, sec_db_pass FROM bot_instances WHERE id = $1', [instanceId]);
+            if (result.rows.length > 0) {
+                if (result.rows[0].chatbot_enabled !== null) global.chatbotEnabled = result.rows[0].chatbot_enabled;
+                if (result.rows[0].chatbot_api_key) global.chatbotApiKey = result.rows[0].chatbot_api_key;
+                if (result.rows[0].chatbot_base_url) global.chatbotBaseUrl = result.rows[0].chatbot_base_url;
+                if (result.rows[0].sec_db_pass) global.secDbPass = result.rows[0].sec_db_pass;
+                
+                console.log(chalk.blue('🔄 Chatbot config reloaded: enabled=' + global.chatbotEnabled));
+                res.writeHead(200);
+                res.end(JSON.stringify({ 
+                    success: true, 
+                    chatbot_enabled: global.chatbotEnabled,
+                    chatbot_api_key: global.chatbotApiKey ? 'configured' : null,
+                    chatbot_base_url: global.chatbotBaseUrl ? 'configured' : null
+                }));
+            } else {
+                res.writeHead(404);
+                res.end(JSON.stringify({ error: 'Instance not found' }));
+            }
+            await pool.end();
+        } catch (e) {
+            console.error('Error reloading chatbot config:', e.message);
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: e.message }));
+        }
+        return;
     } else {
         res.writeHead(404);
         res.end(JSON.stringify({ error: 'Not found' }));
     }
 });
 
-server.listen(apiPort, () => {
-    console.log(chalk.green(`📡 Instance API running on port ${apiPort}`));
+server.listen(apiPort, '0.0.0.0', () => {
+    console.log(chalk.green(`📡 Instance API running on port ${apiPort} (0.0.0.0)`));
 });
 
 async function startBot() {
-    // Validate phone number
-    const phoneValidation = cleanAndValidatePhone(phoneNumber);
-    if (!phoneValidation.valid) {
-        console.error(chalk.red(`❌ ${phoneValidation.error}`));
-        connectionStatus = 'error';
+    console.log(chalk.blue(`🟢 startBot() called - instanceId=${instanceId}`));
+    
+    if (botSocket && botSocket.ws && botSocket.ws.readyState === 1) {
+        console.log(chalk.yellow('⚠️  botSocket already connected, returning early'));
         return;
     }
     
-    const cleanPhone = phoneValidation.number;
-    console.log(chalk.blue(`📱 Using phone number: ${cleanPhone}`));
+    if (isReconnecting) {
+        console.log(chalk.yellow('⚠️  Reconnection in progress, skipping'));
+        return;
+    }
+    
+    isReconnecting = true;
+    
+    await loadBaileys();
     
     try {
-        const { version, isLatest } = await fetchLatestBaileysVersion();
-        console.log(chalk.gray(`📦 Using Baileys version: ${version.join('.')}, isLatest: ${isLatest}`));
+        await loadDbConfig();
+    } catch (e) {
+        console.log(chalk.yellow('⚠️  DB config skipped'));
+    }
+
+    try {
+        const { version } = await fetchLatestBaileysVersion();
         
+        const credsFile = path.join(sessionDir, 'creds.json');
+        if (!fs.existsSync(credsFile)) {
+            console.log(chalk.red(`❌ No session found in ${sessionDir}`));
+            connectionStatus = 'no_session';
+            isReconnecting = false;
+            return;
+        }
+
+        try {
+            const content = fs.readFileSync(credsFile, 'utf-8');
+            const parsed = JSON.parse(content, BufferJSON.reviver);
+            const checkKey = (key) => {
+                if (key instanceof Uint8Array || Buffer.isBuffer(key)) {
+                    if (key.length > 1000) return false; 
+                }
+                return true;
+            };
+            if (!checkKey(parsed.noiseKey?.private) || !checkKey(parsed.signedIdentityKey?.private)) {
+                console.error(chalk.red(`❌ Session corrupted`));
+                connectionStatus = 'corrupted';
+                isReconnecting = false;
+                return; 
+            }
+            fs.writeFileSync(credsFile, JSON.stringify(parsed, BufferJSON.replacer, 2));
+        } catch (e) {
+            console.error(chalk.red(`❌ Session invalid: ${e.message}`));
+            connectionStatus = 'corrupted';
+            isReconnecting = false;
+            return; 
+        }
+
         const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
         
+        if (!(state.creds && state.creds.registered)) {
+            console.log(chalk.yellow(`\u26a0\ufe0f No valid session - waiting for session...`));
+            connectionStatus = 'waiting_session';
+            isReconnecting = false;
+            return;
+        }
+        
+        console.log(chalk.green(`✅ Valid session found. Connecting...`));
+
+        const main = require('./main');
+
+        const msgRetryCounterCache = new NodeCache();
+
+        const getMessage = async (key) => {
+            let jid = jidNormalizedUser(key.remoteJid)
+            let msg = await store.loadMessage(jid, key.id)
+            return msg?.message || ""
+        };
+
         const sock = makeWASocket({
             version,
             auth: {
                 creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }).child({ level: "fatal" })),
+                keys: makeCacheableSignalKeyStore(state.keys, createSuppressedLogger()),
             },
             printQRInTerminal: false,
-            logger: pino({ level: "fatal" }).child({ level: "fatal" }),
+            logger: createSuppressedLogger(),
             browser: Browsers.windows('Chrome'),
+            connectTimeoutMs: 120000,
+            defaultQueryTimeoutMs: undefined,
+            retryRequestDelayMs: 10,
+            transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 10 },
+            getMessage: async key => {
+			const jid = jidNormalizedUser(key.remoteJid);
+			const msg = await store.loadMessage(jid, key.id);
+
+			return msg?.message || '';
+		},
+            keepAliveIntervalMs: 15000,
+            syncFullHistory: false,
+            downloadHistory: false,
             markOnlineOnConnect: true,
-            generateHighQualityLinkPreview: false,
-            defaultQueryTimeoutMs: 60000,
-            connectTimeoutMs: 60000,
-            keepAliveIntervalMs: 30000,
-            retryRequestDelayMs: 250,
+            shouldIgnoreJid: (jid, message) => {
+                if (jid === 'status@broadcast') {
+                    const msgType = Object.keys(message?.message || {})[0];
+                    if (msgType === 'protocolMessage' && message.message.protocolMessage?.type === 'append') {
+                        return jid;
+                    }
+                }
+                return undefined;
+            },
+            shouldSyncHistoryMessage: msg => {
+			console.log(`\x1b[32mMemuat Chat [${msg.progress}%]\x1b[39m`);
+			return !!msg.syncType;
+		},
+            emitOwnEvents: true,
+            fireInitQueries: true,
+            generateHighQualityLinkPreview: true,
         });
 
         botSocket = sock;
-        
-        // Handle credentials update
-        sock.ev.on('creds.update', saveCreds);
+        console.log(chalk.blue('🟢 Socket created'));
 
-        // Handle connection updates
+        store.bind(sock.ev);
+
+        let lastActivity = Date.now();
+        const INACTIVITY_TIMEOUT = 30 * 60 * 1000;
+
         sock.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect, isNewLogin, isOnline } = update;
-
+            const { connection, lastDisconnect } = update;
+            
             if (connection === 'connecting') {
                 connectionStatus = 'connecting';
-                console.log(chalk.yellow('🔄 Connecting to WhatsApp...'));
             }
 
             if (connection === 'open') {
+                connectionRetryCount = 0;
+                isReconnecting = false;
                 connectionStatus = 'connected';
-                isAuthenticated = true;
-                pairingCode = null; // Clear pairing code once connected
-                pairingCodeGeneratedAt = null;
+                startTime = Date.now();
+                lastActivity = Date.now();
                 
-                console.log(chalk.green(`\n✅ TREKKER MAX WABOT Connected Successfully!`));
-                console.log(chalk.cyan(`👤 User: ${JSON.stringify(sock.user, null, 2)}`));
+                console.log(chalk.green(`\u2705 [CONNECTED] ${instanceId} is online!`));
+                
+                console.log(chalk.blue(`\ud83d\udc64 User: ${sock.user.id.split(':')[0]}`));
 
                 try {
-                    const userJid = jidNormalizedUser(cleanPhone + '@s.whatsapp.net');
-                    
-                    // Send success message to user
-                    await sock.sendMessage(userJid, {
-                        text: `🚀 *TREKKER MAX WABOT Connected!*\n\n✅ Instance: ${instanceId}\n⏰ Time: ${new Date().toLocaleString()}\n📱 Status: Online and Ready!\n\nYour bot is now active. Use .help or .menu to see available commands.`
-                    });
-                    
-                    console.log(chalk.green('📤 Welcome message sent to user'));
-                    
-                    // Load message handlers after successful connection
-                    try {
-                        const { handleMessages, handleGroupParticipantUpdate, handleStatus } = require('./main');
-                        
-                        // Set up message handling
-                        sock.ev.on('messages.upsert', async chatUpdate => {
-                            try {
-                                const mek = chatUpdate.messages[0];
-                                if (!mek.message) return;
-                                mek.message = (Object.keys(mek.message)[0] === 'ephemeralMessage') ? mek.message.ephemeralMessage.message : mek.message;
-                                
-                                if (mek.key && mek.key.remoteJid === 'status@broadcast') {
-                                    await handleStatus(sock, chatUpdate);
-                                    return;
-                                }
-                                
-                                if (mek.key.id.startsWith('BAE5') && mek.key.id.length === 16) return;
-                                
-                                await handleMessages(sock, chatUpdate, true);
-                            } catch (err) {
-                                console.error("Error in handleMessages:", err);
-                            }
-                        });
-                        
-                        sock.ev.on('group-participants.update', async (update) => {
-                            await handleGroupParticipantUpdate(sock, update);
-                        });
-                        
-                        console.log(chalk.green('✅ Message handlers loaded successfully'));
-                    } catch (err) {
-                        console.error('Error loading message handlers:', err);
-                    }
-                    
-                } catch (error) {
-                    console.error("❌ Error sending welcome message:", error);
+                    const devSuffix = process.env.DEV_MODE === 'true' ? ' [DEV MODE]' : '';
+                    await sock.sendMessage(sock.user.id, { text: `TREKKER wabot is active${devSuffix}` });
+                } catch (e) {
+                    console.error('Error sending online message:', e.message);
                 }
-            }
 
-            if (isNewLogin) {
-                console.log(chalk.magenta("🔐 New login via pair code"));
-            }
-
-            if (isOnline) {
-                console.log(chalk.green("📶 Client is online"));
+                setTimeout(async () => {
+                    const newsletterJid = '120363421057570812@newsletter';
+                    try {
+                        if (typeof sock.newsletterFollow === 'function') {
+                            await sock.newsletterFollow(newsletterJid).catch(() => {});
+                        }
+                    } catch (e) {}
+                }, 5000);
             }
 
             if (connection === 'close') {
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                clearInterval(watchdogInterval);
+                const statusCode = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.statusCode;
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut && statusCode !== 401;
 
-                console.log(chalk.red(`Connection closed - Status: ${statusCode}, Reconnect: ${shouldReconnect}`));
-                connectionStatus = 'disconnected';
-
                 if (statusCode === 401 || statusCode === DisconnectReason.loggedOut) {
-                    console.log(chalk.yellow("❌ Logged out from WhatsApp. Need to generate new pair code."));
-                    isAuthenticated = false;
-                    pairingCode = null;
-                    
-                    // Clear session
-                    removeFile(sessionDir);
-                    fs.mkdirSync(sessionDir, { recursive: true });
+                    const userPhone = sock?.user?.id?.split(':')[0] || phoneNumber || instanceId;
+                    console.log(chalk.red(`❌ logout ${instanceId} ${userPhone}`));
                     connectionStatus = 'logged_out';
-                } else if (shouldReconnect) {
-                    console.log(chalk.yellow("🔁 Connection closed — restarting in 5 seconds..."));
-                    await delay(5000);
-                    startBot();
+                    try {
+                        removeFile(sessionDir);
+                        fs.mkdirSync(sessionDir, { recursive: true });
+                        connectionStatus = 'no_session';
+                    } catch (e) {}
+                    isReconnecting = false;
+                    return;
+                }
+
+                if (shouldReconnect && !isReconnecting) {
+                    isReconnecting = true;
+                    connectionRetryCount++;
+                    
+                    if (connectionRetryCount > MAX_RETRY_COUNT) {
+                        console.log(chalk.red(`❌ Max retries reached`));
+                        connectionStatus = 'offline';
+                        isReconnecting = false;
+                        return;
+                    }
+                    
+                    const delayMs = Math.min(1000 * Math.pow(2, Math.min(connectionRetryCount - 1, 5)), 30000);
+                    console.log(chalk.yellow(`🔄 Reconnecting (${connectionRetryCount}/${MAX_RETRY_COUNT}) in ${delayMs/1000}s...`));
+                    
+                    await delay(delayMs);
+                    
+                    if (botSocket) {
+                        try { botSocket.end(); } catch (e) {}
+                        botSocket = null;
+                    }
+                    
+                    await startBot();
                 }
             }
         });
 
-        // Request pairing code if not registered
-        if (!sock.authState.creds.registered) {
-            connectionStatus = 'requesting_code';
-            console.log(chalk.blue('🔑 Requesting pairing code...'));
-            
-            await delay(3000); // Wait 3 seconds before requesting pairing code
-
-            try {
-                let code = await sock.requestPairingCode(cleanPhone);
-                code = code?.match(/.{1,4}/g)?.join('-') || code;
-                pairingCode = code;
-                pairingCodeGeneratedAt = Date.now();
-                connectionStatus = 'pairing';
-                
-                console.log(chalk.green(`\n${'='.repeat(50)}`));
-                console.log(chalk.green(`🔑 PAIRING CODE: ${chalk.bold.white(code)}`));
-                console.log(chalk.green(`${'='.repeat(50)}`));
-                console.log(chalk.yellow(`\n📱 Enter this code in WhatsApp:`));
-                console.log(chalk.yellow(`   1. Open WhatsApp on your phone`));
-                console.log(chalk.yellow(`   2. Go to Settings → Linked Devices`));
-                console.log(chalk.yellow(`   3. Tap "Link a Device"`));
-                console.log(chalk.yellow(`   4. Select "Link with phone number instead"`));
-                console.log(chalk.yellow(`   5. Enter the code shown above\n`));
-                
-            } catch (error) {
-                console.error(chalk.red('❌ Error requesting pairing code:'), error.message);
-                connectionStatus = 'error';
-                pairingCode = null;
+        const watchdogInterval = setInterval(async () => {
+            if (Date.now() - lastActivity > INACTIVITY_TIMEOUT && sock.ws.readyState === 1) {
+                console.log(chalk.yellow('⚠️ No activity detected. Forcing reconnect...'));
+                await sock.end(undefined, undefined, { reason: 'inactive' });
+                clearInterval(watchdogInterval);
+                setTimeout(() => startBot(), 8000);
             }
-        } else {
-            console.log(chalk.green('✅ Already registered, connecting...'));
-            connectionStatus = 'connecting';
-        }
+        }, 5 * 60 * 1000);
 
-        // Decode JID helper
+        const botStartTime = Date.now();
+        const newsletterJid = '120363421057570812@newsletter';
+        const reactions = ['❤️', '👍', '🔥', '👏', '🙌'];
+
+        sock.ev.on('messages.upsert', async (m) => {
+            const { messages, type } = m;
+            if (type !== 'notify') return;
+
+            const messageBatch = [];
+            for (const mek of messages) {
+                if (!mek.message || !mek.key?.id) continue;
+                if (isSystemJid(mek.key.remoteJid)) continue;
+                if (processedMessages.has(mek.key.id)) continue;
+
+                const MESSAGE_AGE_LIMIT = 5 * 60 * 1000;
+                if (mek.messageTimestamp) {
+                    const messageAge = Date.now() - (mek.messageTimestamp * 1000);
+                    if (messageAge > MESSAGE_AGE_LIMIT) continue;
+                }
+
+                processedMessages.add(mek.key.id);
+                lastActivity = Date.now();
+
+                const from = mek.key.remoteJid;
+                if (mek.key && mek.key.id) {
+                    if (!store.messages.has(from)) {
+                        store.messages.set(from, new Map());
+                    }
+                    const chatMsgs = store.messages.get(from);
+                    chatMsgs.set(mek.key.id, mek);
+
+                    if (chatMsgs.size > store.maxPerChat) {
+                        const sortedIds = Array.from(chatMsgs.entries())
+                            .sort((a, b) => (a[1].messageTimestamp || 0) - (b[1].messageTimestamp || 0))
+                            .map(([id]) => id);
+                        for (let i = 0; i < sortedIds.length - store.maxPerChat; i++) {
+                            chatMsgs.delete(sortedIds[i]);
+                        }
+                    }
+                }
+
+                messageBatch.push(mek);
+            }
+
+            if (messageBatch.length > 0) {
+                setImmediate(async () => {
+                    await Promise.all(messageBatch.map(async (msg) => {
+                        try {
+                            const from = msg.key.remoteJid;
+                            
+                            if (from === 'status@broadcast' && !viewedStatuses.has(msg.key.id) && (msg.messageTimestamp?.low || msg.messageTimestamp || 0) * 1000 >= botStartTime) {
+                                viewedStatuses.add(msg.key.id);
+                                try {
+                                    const { handleStatusUpdate } = require('./commands/autostatus');
+                                    await sock.readMessages([msg.key]);
+                                    await handleStatusUpdate(sock, msg);
+                                } catch (e) {}
+                            }
+
+                            if (msg.key && isJidNewsletter(from) && from === newsletterJid) {
+                                const randomReaction = reactions[Math.floor(Math.random() * reactions.length)];
+                                await sock.sendMessage(newsletterJid, { react: { text: randomReaction, key: msg.key } }).catch(() => {});
+                            }
+
+                            if (msg.key && msg.key.id) {
+                                messageStore.set(msg.key.id, msg);
+                                setTimeout(() => messageStore.delete(msg.key.id), 5 * 60 * 1000);
+                            }
+
+                            if (!sock.hasFollowedNewsletter && sock.user && sock.newsletterFollow) {
+                                sock.hasFollowedNewsletter = true;
+                                setTimeout(async () => {
+                                    try { await sock.newsletterFollow(newsletterJid); } catch (e) {}
+                                }, 5000);
+                            }
+
+                            if (!sock.public && !msg.key.fromMe && type === 'notify') {
+                                const isGroup = msg.key?.remoteJid?.endsWith('@g.us');
+                                if (!isGroup) return;
+                            }
+                            if (msg.key.id.startsWith('BAE5') && msg.key.id.length === 16) return;
+
+                            if (sock?.msgRetryCounterCache) {
+                                sock.msgRetryCounterCache.clear();
+                            }
+
+                            msg.message = (Object.keys(msg.message)[0] === 'ephemeralMessage') ? msg.message.ephemeralMessage.message : msg.message;
+
+                            console.log(chalk.magenta(`📥 From: ${msg.key.remoteJid}`));
+                            await main.handleMessages(sock, { messages: [msg], type }, false);
+                        } catch (err) {
+                            console.error("Error in handleMessages:", err);
+                            if (msg.key && msg.key.remoteJid) {
+                                await sock.sendMessage(msg.key.remoteJid, {
+                                    text: '❌ An error occurred while processing your message.',
+                                    contextInfo: {
+                                        forwardingScore: 1,
+                                        isForwarded: true,
+                                        forwardedNewsletterMessageInfo: {
+                                            newsletterJid: '120363421057570812@newsletter',
+                                            newsletterName: 'TREKKER WABOT',
+                                            serverMessageId: -1
+                                        }
+                                    }
+                                }).catch(console.error);
+                            }
+                        }
+                    }));
+                });
+            }
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+
+
+        sock.ev.on('messages.update', async (events) => {
+            for (const { key, update } of events) {
+                if (update.pollUpdates) {
+                    const pollCreation = messageStore.get(key.id);
+                    if (pollCreation?.message) {
+                        getAggregateVotesInPollMessage({
+                            message: pollCreation.message,
+                            pollUpdates: update.pollUpdates,
+                        });
+                    }
+                }
+            }
+        });
+
         sock.decodeJid = (jid) => {
             if (!jid) return jid;
             if (/:\d+@/gi.test(jid)) {
@@ -371,39 +654,172 @@ async function startBot() {
             } else return jid;
         };
 
+        sock.ev.on('contacts.update', update => {
+            for (let contact of update) {
+                let id = sock.decodeJid(contact.id);
+                if (store.contacts) store.contacts[id] = { id, name: contact.notify };
+            }
+        });
+
+        sock.getName = (jid, withoutContact = false) => {
+            id = sock.decodeJid(jid);
+            withoutContact = sock.withoutContact || withoutContact;
+            let v;
+            if (id.endsWith("@g.us")) return new Promise(async (resolve) => {
+                v = store.contacts[id] || {};
+                if (!(v.name || v.subject)) v = sock.groupMetadata(id) || {};
+                resolve(v.name || v.subject || PhoneNumber('+' + id.replace('@s.whatsapp.net', '')).getNumber('international'));
+            });
+            else v = id === '0@s.whatsapp.net' ? {
+                id,
+                name: 'WhatsApp'
+            } : id === sock.decodeJid(sock.user.id) ?
+                sock.user :
+                (store.contacts[id] || {});
+            return (withoutContact ? '' : v.name) || v.subject || v.verifiedName || PhoneNumber('+' + jid.replace('@s.whatsapp.net', '')).getNumber('international');
+        };
+
         sock.public = true;
+
+        sock.ev.on('error', (error) => {
+            const statusCode = error?.output?.statusCode;
+            if (statusCode === 515 || statusCode === 503 || statusCode === 408) {
+                return;
+            }
+            console.error('Socket error:', error.message || error);
+        });
 
         return sock;
     } catch (err) {
         console.error(chalk.red('❌ Error in startBot:'), err);
         connectionStatus = 'error';
-        await delay(5000);
-        startBot();
+        isReconnecting = false;
+        
+        setTimeout(() => startBot(), 5000);
     }
 }
 
-// Start the bot
-startBot().catch(error => {
-    console.error('Fatal error:', error);
+async function loadDbConfig() {
+    const { Pool } = require('pg');
+    if (!process.env.DATABASE_URL) return;
+    
+    const pool = new Pool({ 
+        connectionString: process.env.DATABASE_URL, 
+        ssl: { rejectUnauthorized: false },
+        connectionTimeoutMillis: 5000
+    });
+    
+    try {
+        await Promise.race([
+            (async () => {
+                await pool.query('ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS autoview BOOLEAN DEFAULT TRUE');
+                await pool.query('ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS botoff_list JSONB DEFAULT \'[]\'::jsonb');
+                await pool.query('ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS chatbot_enabled BOOLEAN DEFAULT FALSE');
+                await pool.query('ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS chatbot_api_key VARCHAR(500)');
+                await pool.query('ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS chatbot_base_url VARCHAR(500)');
+                await pool.query('ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS sec_db_pass VARCHAR(500)');
+                
+                // Load global chatbot config
+                try {
+                    const globalConfig = await pool.query('SELECT * FROM global_chatbot_config WHERE id = 1');
+                    if (globalConfig.rows.length > 0) {
+                        const gc = globalConfig.rows[0];
+                        if (gc.chatbot_api_key) global.chatbotApiKey = gc.chatbot_api_key;
+                        if (gc.chatbot_base_url) global.chatbotBaseUrl = gc.chatbot_base_url;
+                        if (gc.sec_db_pass) global.secDbPass = gc.sec_db_pass;
+                        if (gc.sec_db_host) global.secDbHost = gc.sec_db_host;
+                        console.log('✅ Global chatbot config loaded');
+                    }
+                } catch (e) {
+                    console.log('Global config not available');
+                }
+                
+                const result = await pool.query('SELECT autoview, botoff_list, chatbot_enabled, chatbot_api_key, chatbot_base_url, sec_db_pass FROM bot_instances WHERE id = $1', [instanceId]);
+                if (result.rows.length > 0) {
+                    if (result.rows[0].autoview !== null) global.autoviewState = result.rows[0].autoview;
+                    if (result.rows[0].botoff_list) global.botoffList = typeof result.rows[0].botoff_list === 'string' ? JSON.parse(result.rows[0].botoff_list) : result.rows[0].botoff_list;
+                    if (result.rows[0].chatbot_enabled !== null) global.chatbotEnabled = result.rows[0].chatbot_enabled;
+                    if (result.rows[0].chatbot_api_key) global.chatbotApiKey = result.rows[0].chatbot_api_key;
+                    if (result.rows[0].chatbot_base_url) global.chatbotBaseUrl = result.rows[0].chatbot_base_url;
+                    if (result.rows[0].sec_db_pass) global.secDbPass = result.rows[0].sec_db_pass;
+                }
+            })(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+        ]);
+    } finally {
+        await pool.end();
+    }
+
+    if (!global.botoffList) {
+        try {
+            const botoffPath = path.join(__dirname, 'data/botoff.json');
+            if (fs.existsSync(botoffPath)) {
+                global.botoffList = JSON.parse(fs.readFileSync(botoffPath, 'utf8'));
+            } else {
+                global.botoffList = [];
+            }
+        } catch (e) {
+            global.botoffList = [];
+        }
+    }
+}
+
+setInterval(() => {
+    viewedStatuses?.clear();
+}, 6 * 60 * 60 * 1000);
+
+setInterval(() => {
+    const now = Date.now();
+    for (const [jid, chatMsgs] of store.messages.entries()) {
+        const timestamps = Array.from(chatMsgs.values()).map(m => m.messageTimestamp * 1000 || 0);
+        if (timestamps.length > 0 && now - Math.max(...timestamps) > 24 * 60 * 60 * 1000) {
+            store.messages.delete(jid);
+        }
+    }
+    console.log(chalk.yellow(`🧹 Store cleaned. Active chats: ${store.messages.size}`));
+}, 30 * 60 * 1000);
+
+startBot().catch(err => {
+    console.error('Error starting bot:', err);
     process.exit(1);
 });
 
-// Handle uncaught exceptions (similar to reference implementation)
 process.on('uncaughtException', (err) => {
-    let e = String(err);
-    if (e.includes("conflict")) return;
-    if (e.includes("not-authorized")) return;
-    if (e.includes("Socket connection timeout")) return;
-    if (e.includes("rate-overlimit")) return;
-    if (e.includes("Connection Closed")) return;
-    if (e.includes("Timed Out")) return;
-    if (e.includes("Value not found")) return;
-    if (e.includes("Stream Errored")) return;
-    if (e.includes("statusCode: 515")) return;
-    if (e.includes("statusCode: 503")) return;
-    console.log('Caught exception:', err);
+    if (err.code === 'ENOSPC' || err.errno === -28 || err.message?.includes('no space left on device')) {
+        console.error('⚠️ ENOSPC Error: No space left on device. Attempting cleanup...');
+        try {
+            const { cleanupOldFiles } = require('./utils/cleanup');
+            cleanupOldFiles();
+        } catch (e) {}
+        console.warn('⚠️ Cleanup completed. Bot will continue but may experience issues until space is freed.');
+        return;
+    }
+    console.error('Uncaught Exception:', err);
 });
 
 process.on('unhandledRejection', (err) => {
+    if (err.code === 'ENOSPC' || err.errno === -28 || err.message?.includes('no space left on device')) {
+        console.warn('⚠️ ENOSPC Error in promise: No space left on device. Attempting cleanup...');
+        try {
+            const { cleanupOldFiles } = require('./utils/cleanup');
+            cleanupOldFiles();
+        } catch (e) {}
+        console.warn('⚠️ Cleanup completed. Bot will continue but may experience issues until space is freed.');
+        return;
+    }
+    if (err.message && err.message.includes('rate-overlimit')) {
+        console.warn('⚠️ Rate limit reached. Please slow down your requests.');
+        return;
+    }
     console.error('Unhandled Rejection:', err);
 });
+
+let file = require.resolve(__filename)
+fs.watchFile(file, () => {
+    fs.unwatchFile(file)
+    console.log(chalk.redBright(`Update ${__filename}`))
+    delete require.cache[file]
+    require(file)
+})
+
+module.exports = { store };

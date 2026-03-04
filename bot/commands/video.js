@@ -1,122 +1,83 @@
 const axios = require('axios');
 const yts = require('yt-search');
 
-// Izumi API configuration
-const izumi = {
-    baseURL: "https://izumiiiiiiii.dpdns.org"
-};
+const BASE_URL = 'https://noobs-api.top';
 
-const AXIOS_DEFAULTS = {
-    timeout: 60000,
-    headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*'
-    }
-};
-
-async function tryRequest(getter, attempts = 3) {
-    let lastError;
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-        try {
-            return await getter();
-        } catch (err) {
-            lastError = err;
-            if (attempt < attempts) {
-                await new Promise(r => setTimeout(r, 1000 * attempt));
-            }
+// Helper for newsletter context
+const channelInfo = {
+    contextInfo: {
+        forwardingScore: 1,
+        isForwarded: true,
+        forwardedNewsletterMessageInfo: {
+            newsletterJid: '120363421057570812@newsletter',
+            newsletterName: 'TREKKER-md',
+            serverMessageId: -1
         }
     }
-    throw lastError;
-}
+};
 
-async function getIzumiVideoByUrl(youtubeUrl) {
-    const apiUrl = `${izumi.baseURL}/downloader/youtube?url=${encodeURIComponent(youtubeUrl)}&format=720`;
-    const res = await tryRequest(() => axios.get(apiUrl, AXIOS_DEFAULTS));
-    if (res?.data?.result?.download) return res.data.result; // { download, title, ... }
-    throw new Error('Izumi video api returned no download');
-}
+module.exports = async (sock, chatId, msg, args) => {
+    const query = args.join(' ');
 
-async function getOkatsuVideoByUrl(youtubeUrl) {
-    const apiUrl = `https://okatsu-rolezapiiz.vercel.app/downloader/ytmp4?url=${encodeURIComponent(youtubeUrl)}`;
-    const res = await tryRequest(() => axios.get(apiUrl, AXIOS_DEFAULTS));
-    // shape: { status, creator, url, result: { status, title, mp4 } }
-    if (res?.data?.result?.mp4) {
-        return { download: res.data.result.mp4, title: res.data.result.title };
+    if (!query) {
+        return sock.sendMessage(chatId, {
+            text: 'Please provide a video name or keyword.'
+        }, { quoted: msg });
     }
-    throw new Error('Okatsu ytmp4 returned no mp4');
-}
 
-async function videoCommand(sock, chatId, message) {
     try {
-        const text = message.message?.conversation || message.message?.extendedTextMessage?.text;
-        const searchQuery = text.split(' ').slice(1).join(' ').trim();
-        
-        
-        if (!searchQuery) {
-            await sock.sendMessage(chatId, { text: 'What video do you want to download?' }, { quoted: message });
-            return;
+        console.log('[VIDEO] Searching YT for:', query);
+        const search = await yts(query);
+        const video = search.videos[0];
+
+        if (!video) {
+            return sock.sendMessage(chatId, {
+                text: 'No results found for your query.'
+            }, { quoted: msg });
         }
 
-        // Determine if input is a YouTube link
-        let videoUrl = '';
-        let videoTitle = '';
-        let videoThumbnail = '';
-        if (searchQuery.startsWith('http://') || searchQuery.startsWith('https://')) {
-            videoUrl = searchQuery;
-        } else {
-            // Search YouTube for the video
-            const { videos } = await yts(searchQuery);
-            if (!videos || videos.length === 0) {
-                await sock.sendMessage(chatId, { text: 'No videos found!' }, { quoted: message });
-                return;
-            }
-            videoUrl = videos[0].url;
-            videoTitle = videos[0].title;
-            videoThumbnail = videos[0].thumbnail;
+        const safeTitle = video.title.replace(/[\\/:*?"<>|]/g, '');
+        const fileName = `${safeTitle}.mp4`;
+        const apiURL = `${BASE_URL}/dipto/ytDl3?link=${encodeURIComponent(video.videoId)}&format=mp4`;
+
+        const response = await axios.get(apiURL);
+        const data = response.data;
+
+        if (!data.downloadLink) {
+            return sock.sendMessage(chatId, {
+                text: 'Failed to retrieve the MP4 download link.'
+            }, { quoted: msg });
         }
 
-        // Send thumbnail immediately
-        try {
-            const ytId = (videoUrl.match(/(?:youtu\.be\/|v=)([a-zA-Z0-9_-]{11})/) || [])[1];
-            const thumb = videoThumbnail || (ytId ? `https://i.ytimg.com/vi/${ytId}/sddefault.jpg` : undefined);
-            const captionTitle = videoTitle || searchQuery;
-            if (thumb) {
-                await sock.sendMessage(chatId, {
-                    image: { url: thumb },
-                    caption: `*${captionTitle}*\nDownloading...`
-                }, { quoted: message });
-            }
-        } catch (e) { console.error('[VIDEO] thumb error:', e?.message || e); }
-        
+        const message = {
+            image: { url: video.thumbnail },
+            caption:
+                `*TREKKER-WABOT VIDEO PLAYER*\n\n` +
+                `╭───────────────◆\n` +
+                `│⿻ *Title:* ${video.title}\n` +
+                `│⿻ *Duration:* ${video.timestamp}\n` +
+                `│⿻ *Views:* ${video.views.toLocaleString()}\n` +
+                `│⿻ *Uploaded:* ${video.ago}\n` +
+                `│⿻ *Channel:* ${video.author.name}\n` +
+                `╰────────────────◆\n\n` +
+                `🔗 ${video.url}`,
+            ...channelInfo
+        };
 
-        // Validate YouTube URL
-        let urls = videoUrl.match(/(?:https?:\/\/)?(?:youtu\.be\/|(?:www\.|m\.)?youtube\.com\/(?:watch\?v=|v\/|embed\/|shorts\/|playlist\?list=)?)([a-zA-Z0-9_-]{11})/gi);
-        if (!urls) {
-            await sock.sendMessage(chatId, { text: 'This is not a valid YouTube link!' }, { quoted: message });
-            return;
-        }
+        await sock.sendMessage(chatId, message, { quoted: msg });
 
-        // Get video: try Izumi first, then Okatsu fallback
-        let videoData;
-        try {
-            videoData = await getIzumiVideoByUrl(videoUrl);
-        } catch (e1) {
-            videoData = await getOkatsuVideoByUrl(videoUrl);
-        }
-
-        // Send video directly using the download URL
         await sock.sendMessage(chatId, {
-            video: { url: videoData.download },
+            video: { url: data.downloadLink },
             mimetype: 'video/mp4',
-            fileName: `${videoData.title || videoTitle || 'video'}.mp4`,
-            caption: `*${videoData.title || videoTitle || 'Video'}*\n\n> *_Downloaded by Knight Bot MD_*`
-        }, { quoted: message });
+            fileName,
+            caption: '*TREKKER-WABOT V2*',
+            ...channelInfo
+        }, { quoted: msg });
 
-
-    } catch (error) {
-        console.error('[VIDEO] Command Error:', error?.message || error);
-        await sock.sendMessage(chatId, { text: 'Download failed: ' + (error?.message || 'Unknown error') }, { quoted: message });
+    } catch (err) {
+        console.error('[VIDEO] Error:', err);
+        await sock.sendMessage(chatId, {
+            text: 'An error occurred while processing your request.'
+        }, { quoted: msg });
     }
-}
-
-module.exports = videoCommand; 
+};
