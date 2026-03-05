@@ -10,7 +10,7 @@ const settings = {
   maxStoreMessages: 20,
   storeWriteInterval: 10000,
   description: "TREKKER MAX WABOT - Multi-Instance WhatsApp Bot Platform",
-  version: "1.0.0",
+  version: "1.2.0",
   updateZipUrl: "",
   // Backend API for bot management
   backendApiUrl: process.env.BACKEND_URL || 

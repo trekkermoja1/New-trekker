@@ -283,7 +283,7 @@ app.get('/api/instances/all', async (req, res) => {
 app.get('/api/instances/server-bots', async (req, res) => {
   try {
     const result = await executeQuery(
-      'SELECT * FROM bot_instances WHERE server_name = $1 ORDER BY created_at DESC',
+      'SELECT * FROM bot_instances WHERE LOWER(server_name) = LOWER($1) ORDER BY created_at DESC',
       [SERVERNAME]
     );
     
@@ -331,7 +331,7 @@ app.post('/api/instances/:instanceId/restart', async (req, res) => {
     
     const instance = result.rows[0];
     
-    if (instance.server_name !== SERVERNAME) {
+    if (instance.server_name && instance.server_name.toLowerCase() !== SERVERNAME.toLowerCase()) {
       return res.status(400).json({ detail: 'Bot is not on this server' });
     }
     
@@ -623,7 +623,7 @@ async function initDatabase() {
     }
     
     // Fix any invalid ports in DB
-    await executeQuery('UPDATE bot_instances SET port = 4000 + (ABS(RANDOM()) % 1000) WHERE port >= 65536 OR port < 1024');
+    await executeQuery('UPDATE bot_instances SET port = 4000 + (FLOOR(RANDOM() * 1000))::INTEGER WHERE port >= 65536 OR port < 1024');
 
     console.log(`✓ Database initialized successfully for ${SERVERNAME} (${useSQLite ? 'SQLite' : 'PostgreSQL'})`);
     console.log(`✓ Port counter initialized at ${portCounter}`);
@@ -760,6 +760,10 @@ async function startInstanceInternal(instanceId, phoneNumber, port, sessionData 
       env
     });
 
+    proc.on('error', (err) => {
+      console.error(chalk.red(`❌ Failed to spawn bot ${instanceId}: ${err.message}`));
+    });
+
     proc.unref();
     botProcesses[instanceId] = proc;
     instancePorts[instanceId] = port;
@@ -771,12 +775,12 @@ async function startInstanceInternal(instanceId, phoneNumber, port, sessionData 
       
       if (code !== 0) {
         try {
-          const statusResult = await executeQuery('SELECT status, start_status FROM bot_instances WHERE id = $1', [instanceId]);
+          const statusResult = await executeQuery('SELECT status, start_status, updated_at FROM bot_instances WHERE id = $1', [instanceId]);
           const instanceStatus = statusResult.rows[0];
           
-          if (instanceStatus?.start_status === 'invalid_session') {
-            console.log(chalk.red(`[STOP] Bot ${instanceId} has invalid session, not restarting - marked as offline`));
-            await executeQuery('UPDATE bot_instances SET status = $1 WHERE id = $2', ['offline', instanceId]);
+          // Don't restart bots that are in 'pairing' status - they will be started by globalpair.js after pairing completes
+          if (instanceStatus?.status === 'pairing') {
+            console.log(chalk.yellow(`[STOP] Bot ${instanceId} is in pairing status, not auto-restarting (will be started by globalpair after pairing completes)`));
             return;
           }
           
@@ -785,16 +789,31 @@ async function startInstanceInternal(instanceId, phoneNumber, port, sessionData 
             return;
           }
           
+          // Check if bot was recently paired (within last 2 minutes) - allow restart even with invalid_session
+          const isRecentlyPaired = instanceStatus?.updated_at && (Date.now() - new Date(instanceStatus.updated_at).getTime()) < 120000;
+          
+          if (instanceStatus?.start_status === 'invalid_session' && !isRecentlyPaired) {
+            console.log(chalk.red(`[STOP] Bot ${instanceId} has invalid session (not recently paired), not restarting - marked as offline`));
+            await executeQuery('UPDATE bot_instances SET status = $1 WHERE id = $2', ['offline', instanceId]);
+            return;
+          }
+          
+          if (instanceStatus?.start_status === 'invalid_session' && isRecentlyPaired) {
+            console.log(chalk.yellow(`[RESTART] Bot ${instanceId} has invalid_session but was recently paired, will retry...`));
+            // Reset start_status to allow retry
+            await executeQuery("UPDATE bot_instances SET start_status = 'new', status = 'connecting' WHERE id = $1", [instanceId]);
+          }
+          
           setTimeout(async () => {
             try {
               await startInstanceInternal(instanceId, phoneNumber, port, sessionData);
               console.log(chalk.green(`[RESTART] Bot ${instanceId} restarted successfully`));
             } catch (e) {
-              console.error(`[RESTART] Failed to restart bot ${instanceId}:`, e.message);
+              console.error(`[RESTART] Failed to restart bot ${instanceId}: ${e.message}`);
             }
           }, 5000);
         } catch (e) {
-          console.error(`[RESTART] Error checking bot status for ${instanceId}:`, e.message);
+          console.error(`[RESTART] Error checking bot status for ${instanceId}: ${e.message}`);
         }
       }
     });
@@ -833,6 +852,79 @@ async function stopInstance(instanceId) {
   }
 }
 
+// Schedule bot to start after pairing timeout (3 minutes)
+const pairingTimeouts = new Map();
+
+function schedulePairingBotStart(instanceId, phoneNumber, port) {
+  // Clear any existing timeout for this instance
+  if (pairingTimeouts.has(instanceId)) {
+    clearTimeout(pairingTimeouts.get(instanceId));
+  }
+  
+  console.log(chalk.yellow(`⏰ Scheduling bot ${instanceId} to start in 3 minutes (pairing timeout)`));
+  
+  const timeout = setTimeout(async () => {
+    try {
+      // Get fresh instance data from DB
+      const result = await executeQuery('SELECT * FROM bot_instances WHERE id = $1', [instanceId]);
+      if (result.rows.length === 0) {
+        console.log(chalk.red(`❌ Instance ${instanceId} not found for scheduled start`));
+        return;
+      }
+      
+      const bot = result.rows[0];
+      
+      // If bot is offline, don't start
+      if (bot.status === 'offline') {
+        console.log(chalk.red(`⏭️ Bot ${instanceId} is offline, skipping scheduled start`));
+        return;
+      }
+      
+      // Check if bot is already connected and running - if so, restart to load new session
+      const isRunning = botProcesses[instanceId] && !botProcesses[instanceId].killed;
+      
+      if (isRunning) {
+        console.log(chalk.yellow(`🔄 Bot ${instanceId} is running, stopping for restart with new session...`));
+        try {
+          botProcesses[instanceId].kill();
+        } catch (e) {}
+        delete botProcesses[instanceId];
+        delete instancePorts[instanceId];
+        await new Promise(r => setTimeout(r, 2000));
+      }
+      
+      // Check if port is already in use by another bot, get new port if needed
+      let assignedPort = bot.port || port;
+      const portInUse = Object.values(instancePorts).includes(assignedPort) || 
+                        (botProcesses[instanceId] === undefined && assignedPort in botProcesses);
+      
+      if (portInUse) {
+        assignedPort = getNextPort();
+        // Make sure it's not in use
+        while (Object.values(instancePorts).includes(assignedPort)) {
+          assignedPort = getNextPort();
+        }
+        console.log(chalk.yellow(`⚠️ Port ${bot.port || port} in use, assigned new port ${assignedPort}`));
+        await executeQuery('UPDATE bot_instances SET port = $1 WHERE id = $2', [assignedPort, instanceId]);
+      }
+      
+      // Start bot exactly like initial server startup - let startInstanceInternal handle everything
+      const isDevMode = bot.start_status === 'new' || bot.start_status === 'pending';
+      console.log(chalk.blue(`🚀 Starting bot ${instanceId} on port ${assignedPort}...`));
+      
+      await startInstanceInternal(instanceId, bot.phone_number || phoneNumber, assignedPort, bot.session_data, isDevMode);
+      console.log(chalk.green(`✅ Scheduled start completed for bot ${instanceId}`));
+      
+    } catch (e) {
+      console.error(chalk.red(`❌ Scheduled start failed for ${instanceId}: ${e.message}`));
+    } finally {
+      pairingTimeouts.delete(instanceId);
+    }
+  }, 3 * 60 * 1000); // 3 minutes
+  
+  pairingTimeouts.set(instanceId, timeout);
+}
+
 async function findAvailableServer() {
   const heartbeatQuery = useSQLite ? "DATETIME('now', '-2 minutes')" : "NOW() - INTERVAL '2 minutes'";
   const result = await executeQuery(`
@@ -857,7 +949,7 @@ async function checkExpiredBots() {
       WHERE start_status = 'new'
       AND status = 'offline'
       AND updated_at <= ${thirtyMinsAgo}
-      AND server_name = $1
+      AND LOWER(server_name) = LOWER($1)
       RETURNING id
     `, [SERVERNAME]);
 
@@ -873,7 +965,7 @@ async function checkExpiredBots() {
       SET start_status = 'expired', updated_at = ${nowFunc}
       WHERE start_status = 'approved' 
       AND expires_at <= ${nowFunc}
-      AND server_name = $1
+      AND LOWER(server_name) = LOWER($1)
       RETURNING id
     `, [SERVERNAME]);
 
@@ -892,7 +984,7 @@ async function updateServerStatus() {
   try {
     const countResult = await executeQuery(`
       SELECT COUNT(*) as count FROM bot_instances 
-      WHERE server_name = $1 AND start_status = 'approved'
+      WHERE LOWER(server_name) = LOWER($1) AND start_status = 'approved'
     `, [SERVERNAME]);
     
     const count = parseInt(countResult.rows[0].count);
@@ -901,7 +993,7 @@ async function updateServerStatus() {
       UPDATE server_manager 
       SET bot_count = $1, last_heartbeat = ${nowFunc}, 
           status = CASE WHEN $1 >= max_limit THEN 'full' ELSE 'active' END
-      WHERE server_name = $2
+      WHERE LOWER(server_name) = LOWER($2)
     `, [count, SERVERNAME]);
   } catch (e) {
     console.error('Error updating server status:', e.message);
@@ -921,10 +1013,10 @@ async function updateServerStatus() {
  */
 app.get('/api/server-info', async (req, res) => {
   try {
-    const total = await executeQuery('SELECT COUNT(*) as count FROM bot_instances WHERE server_name = $1', [SERVERNAME]);
-    const newBots = await executeQuery("SELECT COUNT(*) as count FROM bot_instances WHERE server_name = $1 AND start_status = 'new'", [SERVERNAME]);
-    const approved = await executeQuery("SELECT COUNT(*) as count FROM bot_instances WHERE server_name = $1 AND start_status = 'approved'", [SERVERNAME]);
-    const expired = await executeQuery("SELECT COUNT(*) as count FROM bot_instances WHERE server_name = $1 AND start_status = 'expired'", [SERVERNAME]);
+    const total = await executeQuery('SELECT COUNT(*) as count FROM bot_instances WHERE LOWER(server_name) = LOWER($1)', [SERVERNAME]);
+    const newBots = await executeQuery("SELECT COUNT(*) as count FROM bot_instances WHERE LOWER(server_name) = LOWER($1) AND start_status = 'new'", [SERVERNAME]);
+    const approved = await executeQuery("SELECT COUNT(*) as count FROM bot_instances WHERE LOWER(server_name) = LOWER($1) AND start_status = 'approved'", [SERVERNAME]);
+    const expired = await executeQuery("SELECT COUNT(*) as count FROM bot_instances WHERE LOWER(server_name) = LOWER($1) AND start_status = 'expired'", [SERVERNAME]);
     
     res.json({
       server_name: SERVERNAME,
@@ -1105,6 +1197,7 @@ app.get('/api/instances/by-phone/:phoneNumber', async (req, res) => {
     }
     
     const instance = result.rows[0];
+    const isProcessRunning = botProcesses[instance.id] && !botProcesses[instance.id].killed;
     res.json({
       id: instance.id,
       name: instance.name,
@@ -1114,7 +1207,8 @@ app.get('/api/instances/by-phone/:phoneNumber', async (req, res) => {
       server_name: instance.server_name,
       port: instance.port,
       created_at: instance.created_at,
-      expires_at: instance.expires_at
+      expires_at: instance.expires_at,
+      is_running: isProcessRunning
     });
   } catch (e) {
     res.status(500).json({ detail: e.message });
@@ -1151,7 +1245,7 @@ app.post('/api/instances/:instanceId/pair', async (req, res) => {
     let port = instance.port;
     
     // Check if current server is full
-    const serverLimitResult = await executeQuery('SELECT bot_count, max_limit FROM server_manager WHERE server_name = $1', [SERVERNAME]);
+    const serverLimitResult = await executeQuery('SELECT bot_count, max_limit FROM server_manager WHERE LOWER(server_name) = LOWER($1)', [SERVERNAME]);
     const isFull = serverLimitResult.rows[0] && serverLimitResult.rows[0].bot_count >= serverLimitResult.rows[0].max_limit;
 
     // Load balance if full or if it's a new registration
@@ -1184,7 +1278,10 @@ app.post('/api/instances/:instanceId/pair', async (req, res) => {
     fs.mkdirSync(sessionDir, { recursive: true });
     
     // Clear session_data in DB for fresh pairing
-    await executeQuery('UPDATE bot_instances SET session_data = NULL WHERE id = $1', [instanceId]);
+    await executeQuery('UPDATE bot_instances SET session_data = NULL, status = $1 WHERE id = $2', ['pairing', instanceId]);
+    
+    // Schedule bot to start automatically after 3 minutes (pairing timeout)
+    schedulePairingBotStart(instanceId, instance.phone_number, port);
     
     // Start globalpair if not running
     await startGlobalPairServer();
@@ -1231,11 +1328,12 @@ app.post('/api/instances/pair-new', async (req, res) => {
     const existing = await executeQuery('SELECT id, status, start_status FROM bot_instances WHERE phone_number = $1', [phone_number]);
     if (existing.rows.length > 0) {
       const existingBot = existing.rows[0];
-      // Block if already connected or online in database
-      if (existingBot.status === 'connected' || existingBot.status === 'online') {
+      // Block only if bot process is actually running AND status is connected
+      const isProcessRunning = botProcesses[existingBot.id] && !botProcesses[existingBot.id].killed;
+      if ((existingBot.status === 'connected' || existingBot.status === 'online') && isProcessRunning) {
         return res.status(400).json({ detail: 'Bot is already connected and active. Cannot create new pairing.' });
       }
-      // If not connected, allow re-pairing (will update existing record below)
+      // If not connected or process not running, allow re-pairing (will update existing record below)
     }
     
     // Find best server
@@ -1287,7 +1385,7 @@ app.post('/api/instances/pair-new', async (req, res) => {
     fs.mkdirSync(path.join(instanceDir, 'data'), { recursive: true });
     
     // Check if current server is full
-    const serverLimitResult = await executeQuery('SELECT bot_count, max_limit FROM server_manager WHERE server_name = $1', [SERVERNAME]);
+    const serverLimitResult = await executeQuery('SELECT bot_count, max_limit FROM server_manager WHERE LOWER(server_name) = LOWER($1)', [SERVERNAME]);
     const isFull = serverLimitResult.rows[0] && serverLimitResult.rows[0].bot_count >= serverLimitResult.rows[0].max_limit;
 
     // If full, we still run it temporarily for pairing on THIS server, 
@@ -1498,11 +1596,9 @@ app.get('/api/instances/:instanceId/pairing-code', async (req, res) => {
       await executeQuery('UPDATE bot_instances SET port = $1 WHERE id = $2', [port, instanceId]);
     }
 
-    if (!botProcesses[instanceId]) {
-      await startInstanceInternal(instanceId, instance.phone_number, port, instance.session_data);
-      await new Promise(r => setTimeout(r, 10000)); // Increased wait time
-    }
-
+    // NOTE: Bot should NOT be started here - it will be started by globalpair.js AFTER pairing is complete
+    // This endpoint is only used for the OLD flow where bot generates its own pairing code
+    
     try {
       // Try localhost first, then 127.0.0.1
       let response;
@@ -1669,6 +1765,13 @@ app.post('/api/instances/start-after-pairing', async (req, res) => {
       return res.status(400).json({ detail: 'instanceId is required' });
     }
     
+    // Clear any scheduled start - pairing completed successfully
+    if (pairingTimeouts.has(instanceId)) {
+      clearTimeout(pairingTimeouts.get(instanceId));
+      pairingTimeouts.delete(instanceId);
+      console.log(chalk.blue(`🛑 Cleared scheduled start for ${instanceId} - pairing completed`));
+    }
+    
     // Get instance info
     const result = await executeQuery('SELECT * FROM bot_instances WHERE id = $1', [instanceId]);
     if (result.rows.length === 0) {
@@ -1693,9 +1796,26 @@ app.post('/api/instances/start-after-pairing', async (req, res) => {
     if (sessionExists) {
       console.log(chalk.blue(`📁 Session files found locally for ${instanceId}`));
     } else if (instance.session_data) {
-      // Fallback to DB session
-      console.log(chalk.blue(`📦 Session data found in DB for ${instanceId}`));
-      sessionData = instance.session_data;
+      // Fallback to DB session - write to local files first
+      console.log(chalk.blue(`📦 Session data found in DB for ${instanceId}, writing to local files...`));
+      try {
+        if (!fs.existsSync(sessionDir)) {
+          fs.mkdirSync(sessionDir, { recursive: true });
+        }
+        let credsToSave = instance.session_data;
+        if (typeof credsToSave === 'string') {
+          try { credsToSave = JSON.parse(credsToSave); } catch(e) {}
+        }
+        if (credsToSave?.creds) {
+          credsToSave = credsToSave.creds;
+        }
+        fs.writeFileSync(path.join(sessionDir, 'creds.json'), JSON.stringify(credsToSave, null, 2));
+        console.log(chalk.green(`✅ Written session files locally for ${instanceId}`));
+        sessionData = instance.session_data;
+      } catch (e) {
+        console.error(chalk.red(`❌ Failed to write session files: ${e.message}`));
+        sessionData = instance.session_data;
+      }
     }
     
     // Update status to connecting
@@ -1967,8 +2087,9 @@ app.post('/pair', async (req, res) => {
       const botStartStatus = existingBot.start_status;
       
       // Check if bot is already connected or online in database
-      // Block pairing if status is 'connected' regardless of session files
-      if (botStatus === 'connected' || botStatus === 'online') {
+      // Block pairing only if bot process is actually running AND status is connected
+      const isProcessRunning = botProcesses[existingBot.id] && !botProcesses[existingBot.id].killed;
+      if ((botStatus === 'connected' || botStatus === 'online') && isProcessRunning) {
         return res.send(generatePairingResultHTML(null, 'This bot is already connected and active in the system. No re-pairing needed. Please use the existing connection.'));
       }
       
@@ -1991,6 +2112,9 @@ app.post('/pair', async (req, res) => {
       
       await executeQuery('UPDATE bot_instances SET status = $1, port = $2 WHERE id = $3', ['pairing', port, instanceId]);
       
+      // Schedule bot to start automatically after 3 minutes (pairing timeout)
+      schedulePairingBotStart(instanceId, cleanPhone, port);
+      
     } else {
       const targetServer = await findAvailableServer();
       instanceId = uuidv4().substring(0, 8);
@@ -2006,6 +2130,9 @@ app.post('/pair', async (req, res) => {
       const instanceDir = path.join(botDir, 'instances', instanceId);
       fs.mkdirSync(path.join(instanceDir, 'session'), { recursive: true });
       fs.mkdirSync(path.join(instanceDir, 'data'), { recursive: true });
+      
+      // Schedule bot to start automatically after 3 minutes (pairing timeout)
+      schedulePairingBotStart(instanceId, cleanPhone, port);
     }
     
     // Start globalpair if not running
@@ -2223,8 +2350,9 @@ async function startServer() {
     await checkExpiredBots();
     await updateServerStatus();
     
-    // Start approved, new, or pending bots on this server
-    const result = await executeQuery("SELECT * FROM bot_instances WHERE server_name = $1", [SERVERNAME]);
+    // Start approved bots on this server - but NOT bots that are pairing (status='pairing')
+    // Bots with status='pairing' will be started by globalpair.js AFTER pairing completes
+    const result = await executeQuery("SELECT * FROM bot_instances WHERE LOWER(server_name) = LOWER($1) AND status != 'pairing'", [SERVERNAME]);
     console.log(`🚀 Starting ${result.rows.length} bots from database...`);
     for (const bot of result.rows) {
       const isDevMode = bot.start_status === 'new' || bot.start_status === 'pending';

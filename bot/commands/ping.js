@@ -1,5 +1,21 @@
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
 const settings = require('../settings.js');
+
+const UPTIME_FILE = path.join(__dirname, '../../.bot_uptime.json');
+
+function getBotStartTime() {
+    try {
+        if (fs.existsSync(UPTIME_FILE)) {
+            const data = JSON.parse(fs.readFileSync(UPTIME_FILE, 'utf8'));
+            return data.startTime;
+        }
+    } catch (e) {
+        console.error('Error reading uptime file:', e);
+    }
+    return null;
+}
 
 function formatTime(seconds) {
     const days = Math.floor(seconds / (24 * 60 * 60));
@@ -25,7 +41,8 @@ async function pingCommand(sock, chatId, message) {
         const end = Date.now();
         const ping = Math.round((end - start) / 2);
 
-        const uptimeInSeconds = process.uptime();
+        const botStartTime = getBotStartTime() || Date.now();
+        const uptimeInSeconds = Math.floor((Date.now() - botStartTime) / 1000);
         const uptimeFormatted = formatTime(uptimeInSeconds);
 
         const botInfo = `
@@ -35,7 +52,6 @@ async function pingCommand(sock, chatId, message) {
 ┃ 🔖 Version  : v${settings.version}
 ┗━━━━━━━━━━━━━━━━━━━┛`.trim();
 
-        // Reply to the original message with the bot info
         await sock.sendMessage(chatId, { text: botInfo},{ quoted: message });
 
     } catch (error) {

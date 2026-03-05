@@ -109,6 +109,7 @@ const { dareCommand } = require('./commands/dare');
 const { truthCommand } = require('./commands/truth');
 const { clearCommand } = require('./commands/clear');
 const pingCommand = require('./commands/ping');
+const uptimeCommand = require('./commands/uptime');
 const aliveCommand = require('./commands/alive');
 const blurCommand = require('./commands/img-blur');
 const followCommand = require('./commands/follow');
@@ -708,6 +709,10 @@ async function handleMessages(sock, messageUpdate, isRestricted = false) {
                 break;
             case userMessage === '.ping':
                 await pingCommand(sock, chatId, message);
+                commandExecuted = true;
+                break;
+            case userMessage === '.uptime':
+                await uptimeCommand(sock, chatId, message);
                 commandExecuted = true;
                 break;
             case userMessage === '.alive':

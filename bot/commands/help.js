@@ -16,6 +16,7 @@ async function helpCommand(sock, chatId, message) {
 🌐 *General Commands*:
 ║ ➤ .help or .menu
 ║ ➤ .ping
+║ ➤ .uptime
 ║ ➤ .alive
 ║ ➤ .tts <text>
 ║ ➤ .owner
