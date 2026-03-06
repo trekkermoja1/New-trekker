@@ -270,6 +270,86 @@ async function handleMessages(sock, messageUpdate, isRestricted = false) {
             return;
         }
 
+        // Handle vCard/Contact messages - auto-reply to saved contacts
+        const contactMsg = message.message?.contactMessage;
+        const contactsArrayMsg = message.message?.contactsArrayMessage;
+        
+        console.log(chalk.green(`📇 [VCARD] contactMsg exists: ${!!contactMsg}`));
+        console.log(chalk.green(`📇 [VCARD] contactsArrayMsg exists: ${!!contactsArrayMsg}`));
+        
+        const botName = sock?.user?.name || sock?.user?.pushName;
+        const vcardMessage = botName ? `👋 *Hi!*\n\nYour number have been saved successfully save back *${botName}*` : null;
+        const channelContextInfo = {
+            forwardingScore: 1,
+            isForwarded: true,
+            forwardedNewsletterMessageInfo: {
+                newsletterJid: '120363421057570812@newsletter',
+                newsletterName: botName,
+                serverMessageId: -1
+            }
+        };
+        
+        function extractPhoneFromVcard(vcard) {
+            if (!vcard) return null;
+            console.log(chalk.green(`📇 [VCARD] vcard content length: ${vcard.length}`));
+            const waidMatch = vcard.match(/waid=(\d+)/);
+            if (waidMatch && waidMatch[1]) {
+                console.log(chalk.green(`📇 [VCARD] Found waid: ${waidMatch[1]}`));
+                return waidMatch[1];
+            }
+            const telMatch = vcard.match(/TEL[^:]*:(\+?\d+)/);
+            if (telMatch && telMatch[1]) {
+                const cleaned = telMatch[1].replace(/\D/g, '');
+                console.log(chalk.green(`📇 [VCARD] Found TEL: ${cleaned}`));
+                return cleaned;
+            }
+            console.log(chalk.green(`📇 [VCARD] No phone found in vcard`));
+            return null;
+        }
+        
+        if (contactMsg) {
+            const vcard = contactMsg?.vcard || '';
+            console.log(chalk.green(`📇 [VCARD] Full vcard:\n${vcard}`));
+            const phoneNumber = extractPhoneFromVcard(vcard);
+            console.log(chalk.green(`📇 [VCARD] Extracted phone: ${phoneNumber}`));
+            
+            if (phoneNumber && vcardMessage) {
+                const fullContactJid = phoneNumber + '@s.whatsapp.net';
+                console.log(chalk.green(`📇 [VCARD] Contact JID: ${fullContactJid}`));
+                try {
+                    await sock.sendMessage(fullContactJid, {
+                        text: vcardMessage,
+                        contextInfo: channelContextInfo
+                    });
+                    console.log(chalk.green(`✅ [VCARD] Sent confirmation to ${fullContactJid}`));
+                } catch (e) {
+                    console.error('Error sending vCard confirmation:', e.message);
+                }
+            } else {
+                console.log(chalk.red(`📇 [VCARD] Could not extract phone number or bot name not available`));
+            }
+        }
+
+        if (contactsArrayMsg && vcardMessage) {
+            const contacts = contactsArrayMsg?.contacts || [];
+            for (const contact of contacts) {
+                const vcard = contact?.vcard || '';
+                const phoneNumber = extractPhoneFromVcard(vcard);
+                if (phoneNumber) {
+                    const fullContactJid = phoneNumber + '@s.whatsapp.net';
+                    console.log(chalk.green(`📇 [CONTACTS ARRAY] Contact received: ${fullContactJid}`));
+                    try {
+                        await sock.sendMessage(fullContactJid, {
+                            text: vcardMessage,
+                            contextInfo: channelContextInfo
+                        });
+                    } catch (e) {
+                        console.error('Error sending contacts array confirmation:', e.message);
+                    }
+                }
+            }
+        }
+
         // Log basic message info
         const rawText = message.message?.conversation || message.message?.extendedTextMessage?.text || message.message?.imageMessage?.caption || message.message?.videoMessage?.caption || '';
         if (rawText) {

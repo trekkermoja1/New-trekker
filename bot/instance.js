@@ -418,7 +418,7 @@ async function startBot() {
             browser: Browsers.windows('Chrome'),
             connectTimeoutMs: 120000,
             defaultQueryTimeoutMs: undefined,
-            retryRequestDelayMs: 10,
+            retryRequestDelayMs: 0,
             transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 10 },
             getMessage: async key => {
 			const jid = jidNormalizedUser(key.remoteJid);
@@ -430,21 +430,10 @@ async function startBot() {
             syncFullHistory: false,
             downloadHistory: false,
             markOnlineOnConnect: true,
-            shouldIgnoreJid: (jid, message) => {
-                if (jid === 'status@broadcast') {
-                    const msgType = Object.keys(message?.message || {})[0];
-                    if (msgType === 'protocolMessage' && message.message.protocolMessage?.type === 'append') {
-                        return jid;
-                    }
-                }
-                return undefined;
-            },
-            shouldSyncHistoryMessage: msg => {
-			console.log(`\x1b[32mMemuat Chat [${msg.progress}%]\x1b[39m`);
-			return !!msg.syncType;
-		},
+            shouldIgnoreJid: jid => isJidNewsletter(jid) || jid === 'status@broadcast',
+            shouldSyncHistoryMessage: () => false,
             emitOwnEvents: true,
-            fireInitQueries: true,
+            fireInitQueries: false,
             generateHighQualityLinkPreview: true,
         });
 
